@@ -63,7 +63,8 @@ export function oauthCallbackUrl(provider: CalendarProvider): string {
 
 export function frontendCalendarReturnUrl(query: Record<string, string> = {}): string {
   const qs = new URLSearchParams(query).toString();
-  return `${getAppBaseUrl()}/settings${qs ? `?${qs}` : ""}`;
+  // Land on SDR Setup (primary home for calendar + Twilio voice-agent setup)
+  return `${getAppBaseUrl()}/sdr-setup${qs ? `?${qs}` : ""}`;
 }
 
 export function getProviderClientCredentials(provider: CalendarProvider): {
