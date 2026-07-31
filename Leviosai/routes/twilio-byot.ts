@@ -324,4 +324,38 @@ router.post("/api/twilio/number/unassign", async (req: Request, res: Response) =
   }
 });
 
+// ─── POST /api/twilio/test-sms ────────────────────────────────────────────────
+// Body: { to } — send a short test SMS from the workspace's active number.
+router.post("/api/twilio/test-sms", async (req: Request, res: Response) => {
+  try {
+    const toRaw = String(req.body?.to || "").trim();
+    if (!toRaw) return res.status(400).json({ error: "Phone number is required" });
+
+    // Accept +E.164 or digits; normalize leading +
+    const to = toRaw.startsWith("+") ? toRaw.replace(/[^\d+]/g, "") : `+${toRaw.replace(/\D/g, "")}`;
+    if (!/^\+[1-9]\d{7,14}$/.test(to)) {
+      return res.status(400).json({ error: "Enter a valid phone number with country code (e.g. +15551234567)" });
+    }
+
+    const ws = await getWorkspace((req as any).workspaceId);
+    if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+    const client = clientFromWorkspace(ws);
+    if (!client) return res.status(400).json({ error: "Twilio is not connected" });
+    if (!ws.twilioPhoneNumber) {
+      return res.status(400).json({ error: "Assign an active Twilio phone number before sending a test SMS" });
+    }
+
+    const message = await client.messages.create({
+      body: "Leviosai test SMS — your Twilio connection is working. You can ignore this message.",
+      from: ws.twilioPhoneNumber,
+      to,
+    });
+
+    res.json({ ok: true, sid: message.sid, from: ws.twilioPhoneNumber, to });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to send test SMS" });
+  }
+});
+
 export default router;

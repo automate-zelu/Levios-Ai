@@ -13,6 +13,10 @@ export default function GmailConnectCard() {
   const [error, setError] = useState("");
   const [banner, setBanner] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [showTest, setShowTest] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -84,6 +88,30 @@ export default function GmailConnectCard() {
     }
   };
 
+  const openTest = () => {
+    setTestEmail(status?.accountEmail || "");
+    setTestResult(null);
+    setError("");
+    setShowTest(true);
+  };
+
+  const handleSendTest = async () => {
+    setTestBusy(true);
+    setTestResult(null);
+    setError("");
+    try {
+      const res = await gmailApi.testEmail(testEmail.trim());
+      setTestResult({
+        ok: true,
+        text: `Test email sent to ${res.to}${res.from ? ` (from ${res.from})` : ""}`,
+      });
+    } catch (err) {
+      setTestResult({ ok: false, text: err.message || "Failed to send test email" });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   if (loading && !status) {
     return <div style={{ color: COLORS.textMuted, fontSize: 13 }}>Loading Gmail status…</div>;
   }
@@ -139,16 +167,26 @@ export default function GmailConnectCard() {
               )}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {connected ? (
-              <button
-                type="button"
-                style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12 }}
-                disabled={busy}
-                onClick={handleDisconnect}
-              >
-                Disconnect
-              </button>
+              <>
+                <button
+                  type="button"
+                  style={{ ...S.btn("secondary"), padding: "8px 14px", fontSize: 12 }}
+                  disabled={busy || testBusy}
+                  onClick={openTest}
+                >
+                  Test email
+                </button>
+                <button
+                  type="button"
+                  style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12 }}
+                  disabled={busy}
+                  onClick={handleDisconnect}
+                >
+                  Disconnect
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -245,6 +283,88 @@ export default function GmailConnectCard() {
                 onClick={handleConfirmConnect}
               >
                 {busy ? "Opening Google…" : "Continue with Google"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTest && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gmail-test-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => !testBusy && setShowTest(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 440,
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 14,
+              padding: 24,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div id="gmail-test-title" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+              Send test email
+            </div>
+            <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.55, marginTop: 0 }}>
+              We’ll send a short message from your connected Gmail so you can confirm delivery.
+            </p>
+            <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>
+              Recipient email
+            </label>
+            <input
+              style={{ ...S.input, marginBottom: 12 }}
+              type="email"
+              value={testEmail}
+              onChange={(e) => setTestEmail(e.target.value)}
+              placeholder="you@example.com"
+              disabled={testBusy}
+            />
+            {testResult && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: 10,
+                  borderRadius: 8,
+                  fontSize: 12,
+                  background: testResult.ok ? `${COLORS.green}15` : `${COLORS.red}15`,
+                  color: testResult.ok ? COLORS.green : COLORS.red,
+                }}
+              >
+                {testResult.text}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                style={{ ...S.btn("ghost"), padding: "9px 16px", fontSize: 13 }}
+                disabled={testBusy}
+                onClick={() => setShowTest(false)}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                style={{ ...S.btn("primary"), padding: "9px 18px", fontSize: 13, opacity: testBusy ? 0.6 : 1 }}
+                disabled={testBusy || !testEmail.trim()}
+                onClick={handleSendTest}
+              >
+                {testBusy ? "Sending…" : "Send test email"}
               </button>
             </div>
           </div>

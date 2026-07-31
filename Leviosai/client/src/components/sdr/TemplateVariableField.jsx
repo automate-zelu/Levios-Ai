@@ -118,15 +118,14 @@ export function TemplateVariableField({
               fontSize: 11,
               padding: "4px 9px",
               borderRadius: 6,
-              border: `1px solid ${v.recommended ? `${COLORS.orange}66` : COLORS.border}`,
-              background: v.recommended ? `${COLORS.orange}12` : COLORS.surfaceAlt,
+              border: `1px solid ${COLORS.border}`,
+              background: COLORS.surfaceAlt,
               color: COLORS.text,
               cursor: "pointer",
               fontFamily: "inherit",
             }}
           >
             @{v.label}
-            {v.recommended ? " *" : ""}
           </button>
         ))}
       </div>
@@ -187,7 +186,7 @@ export function TemplateVariableField({
                   padding: "10px 12px",
                   border: "none",
                   borderBottom: i < filtered.length - 1 ? `1px solid ${COLORS.border}55` : "none",
-                  background: i === 0 ? `${COLORS.orange}10` : "transparent",
+                  background: "transparent",
                   color: "inherit",
                   cursor: "pointer",
                   fontFamily: "inherit",
@@ -195,10 +194,7 @@ export function TemplateVariableField({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
                   <span style={{ fontWeight: 650, fontSize: 13 }}>@{v.label}</span>
-                  <code style={{ fontSize: 10, color: COLORS.teal }}>{tokenForVar(v.key)}</code>
-                  {v.recommended && (
-                    <span style={{ fontSize: 10, color: COLORS.orange, fontWeight: 600 }}>recommended</span>
-                  )}
+                  <code style={{ fontSize: 10, color: COLORS.textMuted }}>{tokenForVar(v.key)}</code>
                 </div>
                 <div style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.4 }}>{v.description}</div>
               </button>
@@ -209,7 +205,6 @@ export function TemplateVariableField({
 
       <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 6, lineHeight: 1.45 }}>
         Type <strong style={{ color: COLORS.text }}>@</strong> to pick a variable, or click a chip.
-        <span style={{ color: COLORS.textDim }}> * = recommended</span>
         {" · "}
         Variables map to CRM / workspace fields — you can’t invent new ones without data behind them.
       </div>

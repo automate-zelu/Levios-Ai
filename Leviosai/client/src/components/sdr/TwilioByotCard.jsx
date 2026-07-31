@@ -18,6 +18,10 @@ export default function TwilioByotCard() {
   const [searching, setSearching]     = useState(false);
   const [selected, setSelected]       = useState(null);
   const [purchasing, setPurchasing]   = useState(false);
+  const [showTest, setShowTest]       = useState(false);
+  const [testPhone, setTestPhone]     = useState("");
+  const [testBusy, setTestBusy]       = useState(false);
+  const [testResult, setTestResult]   = useState(null);
 
   const req = (path, opts = {}) =>
     fetch(path, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("catalyst_token")}`, ...(opts.headers || {}) } });
@@ -118,6 +122,32 @@ export default function TwilioByotCard() {
     setExistingNums(null);
   };
 
+  const openTestSms = () => {
+    setTestPhone("");
+    setTestResult(null);
+    setError("");
+    setShowTest(true);
+  };
+
+  const handleSendTestSms = async () => {
+    setTestBusy(true);
+    setTestResult(null);
+    setError("");
+    try {
+      const res = await req("/api/twilio/test-sms", {
+        method: "POST",
+        body: JSON.stringify({ to: testPhone.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send test SMS");
+      setTestResult({ ok: true, text: `Test SMS sent to ${data.to} from ${data.from}` });
+    } catch (e) {
+      setTestResult({ ok: false, text: e.message || "Failed to send test SMS" });
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   const NumberRow = ({ n, isExisting }) => {
     const isSel    = selected === n.phoneNumber;
     const isActive = status?.phoneNumber === n.phoneNumber || n.inUse;
@@ -183,10 +213,20 @@ export default function TwilioByotCard() {
             <div style={{ fontSize: 11, color: COLORS.textMuted }}>SMS & Voice — connect your own account</div>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {status.connected
             ? <span style={S.badge(COLORS.green)}>✓ Connected</span>
             : <span style={{ fontSize: 11, color: COLORS.textDim }}>Not connected</span>}
+          {status.connected && status.phoneNumber && (
+            <button
+              type="button"
+              style={{ ...S.btn("secondary"), padding: "5px 10px", fontSize: 11 }}
+              onClick={openTestSms}
+              disabled={testBusy}
+            >
+              Test SMS
+            </button>
+          )}
           {status.connected && (
             <button style={{ ...S.btn("ghost"), padding: "5px 10px", fontSize: 11 }} onClick={handleDisconnect}>Disconnect</button>
           )}
@@ -391,6 +431,88 @@ export default function TwilioByotCard() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {showTest && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="twilio-test-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => !testBusy && setShowTest(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 440,
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 14,
+              padding: 24,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div id="twilio-test-title" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+              Send test SMS
+            </div>
+            <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.55, marginTop: 0 }}>
+              We’ll text from your active Twilio number ({status.phoneNumber}) so you can confirm SMS delivery.
+            </p>
+            <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>
+              Recipient phone (with country code)
+            </label>
+            <input
+              style={{ ...S.input, marginBottom: 12 }}
+              type="tel"
+              value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value)}
+              placeholder="+15551234567"
+              disabled={testBusy}
+            />
+            {testResult && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: 10,
+                  borderRadius: 8,
+                  fontSize: 12,
+                  background: testResult.ok ? `${COLORS.green}15` : `${COLORS.red}15`,
+                  color: testResult.ok ? COLORS.green : COLORS.red,
+                }}
+              >
+                {testResult.text}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                style={{ ...S.btn("ghost"), padding: "9px 16px", fontSize: 13 }}
+                disabled={testBusy}
+                onClick={() => setShowTest(false)}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                style={{ ...S.btn("primary"), padding: "9px 18px", fontSize: 13, opacity: testBusy ? 0.6 : 1 }}
+                disabled={testBusy || !testPhone.trim()}
+                onClick={handleSendTestSms}
+              >
+                {testBusy ? "Sending…" : "Send test SMS"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

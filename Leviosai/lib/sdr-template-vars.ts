@@ -9,27 +9,16 @@ export interface SdrTemplateVar {
   /** Shown in live preview when rendering sample data. */
   sample: string;
   group: "lead" | "workspace";
-  /** Strongly recommended for personalization / branding. */
-  recommended?: boolean;
 }
 
 /** Canonical variable catalog — keep UI + render in sync via this list. */
 export const SDR_TEMPLATE_VARS: SdrTemplateVar[] = [
-  {
-    key: "lead_name",
-    label: "Lead first name",
-    description: "Lead's first name (same as first_name). Recommended in greetings.",
-    sample: "Alex",
-    group: "lead",
-    recommended: true,
-  },
   {
     key: "first_name",
     label: "First name",
     description: "Lead's first name from CRM.",
     sample: "Alex",
     group: "lead",
-    recommended: true,
   },
   {
     key: "last_name",
@@ -72,7 +61,6 @@ export const SDR_TEMPLATE_VARS: SdrTemplateVar[] = [
     description: "Your workspace / organization name.",
     sample: "Leviosai",
     group: "workspace",
-    recommended: true,
   },
 ];
 
@@ -91,6 +79,7 @@ export function buildSdrTemplateContext(
   const first = (lead.firstName || "").trim();
   const last = (lead.lastName || "").trim();
   return {
+    // lead_name kept for older saved templates; not shown in the picker
     lead_name: first,
     first_name: first,
     last_name: last,

@@ -30,7 +30,7 @@ const PIPELINE_STEPS = [
   {
     id: "sms",
     title: "4. SMS follow-up",
-    body: "After wait-after-call hours, Twilio sends your SMS template ({{lead_name}}). Reply → sequence stops as engaged. No reply → wait-after-SMS hours, then email.",
+    body: "After wait-after-call hours, Twilio sends your SMS template ({{first_name}}). Reply → sequence stops as engaged. No reply → wait-after-SMS hours, then email.",
   },
   {
     id: "email",

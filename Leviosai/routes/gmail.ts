@@ -15,6 +15,7 @@ import {
   getGmailStatus,
   upsertGmailConnection,
 } from "../lib/gmail/tokens.js";
+import { sendEmailViaGmail } from "../lib/gmail/send.js";
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "catalyst-dev-secret-change-in-production";
@@ -124,6 +125,34 @@ router.delete("/api/gmail/connect", requireAuth, async (req: Request, res: Respo
     res.json({ connected: false });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/gmail/test-email — Body: { to }
+router.post("/api/gmail/test-email", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = req.organizationId;
+    if (!orgId) return res.status(400).json({ error: "No organization" });
+
+    const to = String(req.body?.to || "").trim();
+    if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      return res.status(400).json({ error: "Enter a valid email address" });
+    }
+
+    const result = await sendEmailViaGmail(
+      orgId,
+      to,
+      "Leviosai test email — Gmail connected",
+      "This is a test message from Leviosai.\n\nIf you received this, your Gmail connection is working and SDR follow-up emails can send from your account.\n\nYou can ignore this message."
+    );
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || "Failed to send test email" });
+    }
+
+    res.json({ ok: true, id: result.id, from: result.from, to });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to send test email" });
   }
 });
 

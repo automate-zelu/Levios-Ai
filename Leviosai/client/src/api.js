@@ -191,6 +191,8 @@ export const gmailApi = {
   status: () => request("/api/gmail/status"),
   startOAuth: () => request("/api/gmail/oauth/start", { method: "POST", body: "{}" }),
   disconnect: () => request("/api/gmail/connect", { method: "DELETE" }),
+  testEmail: (to) =>
+    request("/api/gmail/test-email", { method: "POST", body: JSON.stringify({ to }) }),
 };
 
 // Health

@@ -1,23 +1,15 @@
 /**
  * Mirror of lib/sdr-template-vars.ts — keep keys/labels in sync.
  * Editors insert {{key}} via @-mention; runtime replaces from CRM + workspace.
+ * {{lead_name}} still renders for older templates but is not offered in the picker.
  */
 export const SDR_TEMPLATE_VARS = [
-  {
-    key: "lead_name",
-    label: "Lead first name",
-    description: "Lead's first name (same as first_name). Recommended in greetings.",
-    sample: "Alex",
-    group: "lead",
-    recommended: true,
-  },
   {
     key: "first_name",
     label: "First name",
     description: "Lead's first name from CRM.",
     sample: "Alex",
     group: "lead",
-    recommended: true,
   },
   {
     key: "last_name",
@@ -60,7 +52,6 @@ export const SDR_TEMPLATE_VARS = [
     description: "Your workspace / organization name.",
     sample: "Leviosai",
     group: "workspace",
-    recommended: true,
   },
 ];
 
@@ -69,7 +60,10 @@ export function tokenForVar(key) {
 }
 
 export function sampleTemplateContext() {
-  const ctx = {};
+  const ctx = {
+    // still resolve older templates in preview
+    lead_name: "Alex",
+  };
   for (const v of SDR_TEMPLATE_VARS) ctx[v.key] = v.sample;
   return ctx;
 }
