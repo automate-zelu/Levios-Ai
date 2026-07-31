@@ -124,6 +124,42 @@ jobs:
             --exclude='client/dist' \
             ./ "$EC2_USER@$EC2_HOST:$REMOTE_DIR/"
 
+      - name: Sync app .env from LEVIOSAI_ENV (prod overrides)
+        env:
+          LEVIOSAI_ENV: ${{ secrets.LEVIOSAI_ENV }}
+        run: |
+          if [ -z "$LEVIOSAI_ENV" ]; then
+            echo "Missing LEVIOSAI_ENV secret"
+            exit 1
+          fi
+          printf '%s\n' "$LEVIOSAI_ENV" > /tmp/leviosai.env
+          if grep -q '^BASE_URL=' /tmp/leviosai.env; then
+            sed -i.bak "s|^BASE_URL=.*|BASE_URL=http://${EC2_HOST}|" /tmp/leviosai.env
+          else
+            echo "BASE_URL=http://${EC2_HOST}" >> /tmp/leviosai.env
+          fi
+          if grep -q '^REDIS_URL=' /tmp/leviosai.env; then
+            sed -i.bak 's|^REDIS_URL=.*|REDIS_URL=redis://127.0.0.1:6379|' /tmp/leviosai.env
+          else
+            echo "REDIS_URL=redis://127.0.0.1:6379" >> /tmp/leviosai.env
+          fi
+          if grep -q '^NODE_ENV=' /tmp/leviosai.env; then
+            sed -i.bak 's|^NODE_ENV=.*|NODE_ENV=production|' /tmp/leviosai.env
+          else
+            echo "NODE_ENV=production" >> /tmp/leviosai.env
+          fi
+          rm -f /tmp/leviosai.env.bak
+          grep -q '^DATABASE_URL=' /tmp/leviosai.env
+          REMOTE_ENV="/home/${EC2_USER}/${DEPLOY_DIR:-leviosai}/.env"
+          scp -i ec2_key.pem \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            /tmp/leviosai.env \
+            "$EC2_USER@$EC2_HOST:$REMOTE_ENV"
+          rm -f /tmp/leviosai.env
+          echo "Synced .env to EC2 with BASE_URL=http://${EC2_HOST}"
+
       - name: Install, build, and restart with PM2
         run: |
           ssh -i ec2_key.pem \
@@ -151,7 +187,7 @@ jobs:
           rm -rf client/node_modules/.vite /tmp/vite-* /tmp/npm-* 2>/dev/null || true
 
           if [ ! -f .env ]; then
-            echo "ERROR: \$APP_DIR/.env is missing on the server. Create it once with production secrets."
+            echo "ERROR: \$APP_DIR/.env is missing on the server after secret sync."
             exit 1
           fi
 
