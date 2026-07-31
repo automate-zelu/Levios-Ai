@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { COLORS, S } from "../theme.js";
-import { callApi, sdrApi } from "../api.js";
+import { callApi } from "../api.js";
 import { CallLogTable } from "../components/calling/CallLogTable.jsx";
 import { CallingAnalyticsCards } from "../components/calling/CallingAnalyticsCards.jsx";
 import { RecordingPlayer } from "../components/calling/RecordingPlayer.jsx";
@@ -20,13 +20,6 @@ export default function CallingPanelPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("log");
 
-  const [voices, setVoices] = useState([]);
-  const [voicesLoading, setVoicesLoading] = useState(false);
-  const [selectedVoiceId, setSelectedVoiceId] = useState("");
-  const [savingVoice, setSavingVoice] = useState(false);
-  const [voiceSaved, setVoiceSaved] = useState(false);
-  const [playingId, setPlayingId] = useState(null);
-  const audioRef = useRef(null);
   const selectedRef = useRef(null);
   selectedRef.current = selected;
 
@@ -49,15 +42,6 @@ export default function CallingPanelPage() {
 
   useEffect(() => {
     fetchData();
-    setVoicesLoading(true);
-    Promise.all([callApi.getVoices(), sdrApi.getConfig()])
-      .then(([vList, cfg]) => {
-        setVoices(vList || []);
-        if (cfg?.assistantVoiceId) setSelectedVoiceId(cfg.assistantVoiceId);
-        else if (vList?.length) setSelectedVoiceId(vList[0].id);
-      })
-      .catch(() => {})
-      .finally(() => setVoicesLoading(false));
   }, []);
 
   useEffect(() => {
@@ -66,34 +50,6 @@ export default function CallingPanelPage() {
     const t = setInterval(() => fetchData(true), 5000);
     return () => clearInterval(t);
   }, [sessions]);
-
-  const playPreview = (voiceId, url) => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    if (playingId === voiceId) {
-      setPlayingId(null);
-      return;
-    }
-    if (!url) return;
-    const audio = new Audio(url);
-    audioRef.current = audio;
-    setPlayingId(voiceId);
-    audio.play().catch(() => setPlayingId(null));
-    audio.onended = () => setPlayingId(null);
-  };
-
-  const saveVoice = async () => {
-    if (!selectedVoiceId) return;
-    setSavingVoice(true);
-    try {
-      await sdrApi.saveVoice(selectedVoiceId);
-      setVoiceSaved(true);
-      setTimeout(() => setVoiceSaved(false), 3000);
-    } catch { /* ignore */ }
-    setSavingVoice(false);
-  };
 
   if (loading) {
     return (
@@ -114,75 +70,6 @@ export default function CallingPanelPage() {
       </div>
 
       <CallingAnalyticsCards analytics={analytics} />
-
-      <div style={S.card}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={S.cardHeader}>AI Voice</div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>
-              Select the ElevenLabs voice your AI agent will use on calls
-            </div>
-          </div>
-          <button
-            type="button"
-            style={{ ...S.btn("primary"), padding: "8px 20px", opacity: savingVoice ? 0.6 : 1 }}
-            onClick={saveVoice}
-            disabled={savingVoice || !selectedVoiceId}
-          >
-            {voiceSaved ? "✓ Saved" : savingVoice ? "Saving…" : "Save Voice"}
-          </button>
-        </div>
-
-        {voicesLoading ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>Loading voices from ElevenLabs…</div>
-        ) : voices.length === 0 ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>
-            No voices found. Check that ELEVENLABS_API_KEY is set.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
-            {voices.map((v) => {
-              const isSelected = selectedVoiceId === v.id;
-              const isPreviewing = playingId === v.id;
-              return (
-                <div
-                  key={v.id}
-                  onClick={() => setSelectedVoiceId(v.id)}
-                  style={{
-                    border: `2px solid ${isSelected ? COLORS.purple : COLORS.border}`,
-                    borderRadius: 10,
-                    padding: "12px 14px",
-                    cursor: "pointer",
-                    background: isSelected ? "rgba(155,89,182,0.08)" : COLORS.surfaceAlt,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); playPreview(v.id, v.previewUrl); }}
-                    style={{
-                      width: 34, height: 34, borderRadius: "50%", border: "none", cursor: "pointer",
-                      background: isPreviewing ? COLORS.orange : isSelected ? COLORS.purple : COLORS.border,
-                      color: "#fff", fontSize: 13, flexShrink: 0,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
-                    title={isPreviewing ? "Stop preview" : "Play preview"}
-                  >
-                    {isPreviewing ? "■" : "▶"}
-                  </button>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</div>
-                    <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "monospace", marginTop: 2 }}>{v.id.slice(0, 20)}…</div>
-                  </div>
-                  {isSelected && <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.purple, flexShrink: 0 }} />}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 20, marginTop: 8 }}>
         {["log", "detail"].map((t) => (
