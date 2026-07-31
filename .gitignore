@@ -1,0 +1,47 @@
+# ─── Root repo ignores (Levios-Ai) ───────────────────────────────────────────
+
+# Contract / planning docs — never publish
+IMPLEMENTATION_PLAN.md
+ZeluAI_Scope_of_Work_ZAI-2025-LEV-002.docx
+ZeluAI_Scope_of_Work_ZAI-2025-LEV-002.txt
+ZeluAI_Scope_of_Work_*.docx
+ZeluAI_Scope_of_Work_*.txt
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/env file
+Leviosai/env file
+*.pem
+*.key
+
+# Dependencies & build
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+client/dist/
+Leviosai/client/dist/
+Leviosai/dist/
+
+# Runtime / local data
+recordings/
+Leviosai/recordings/
+backups/
+Leviosai/backups/
+*.log
+.DS_Store
+
+# Tooling / IDE
+.claude/
+**/.claude/
+.cursor/
+*.pem
+*.key
+
+# Nested git metadata if present under Leviosai/
+Leviosai/.git/

@@ -1,0 +1,28 @@
+# Dependabot for Leviosai CRM (parent workspace layout)
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/Leviosai"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - leviosai
+
+  - package-ecosystem: "npm"
+    directory: "/Leviosai/client"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - leviosai-client
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - dependencies
+      - github-actions

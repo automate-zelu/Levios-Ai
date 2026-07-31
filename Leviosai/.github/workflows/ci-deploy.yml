@@ -1,0 +1,168 @@
+# Leviosai CRM — CI + production deploy
+# This file lives in the app git root (Leviosai/).
+
+name: Leviosai CI & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: leviosai-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  ci:
+    name: Install · Unit tests · Client build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Install client dependencies
+        run: npm run client:install
+
+      - name: Run unit tests (Modules 1–10 + helpers)
+        run: npm run test:ci
+        env:
+          SDR_DRY_RUN: "1"
+          NODE_ENV: test
+
+      - name: Build client (Vite)
+        run: npm run client:build
+
+      - name: Typecheck server (non-blocking until schema/zod cleaned up)
+        continue-on-error: true
+        run: npx tsc --noEmit
+
+  deploy:
+    name: Deploy to EC2
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      DEPLOY_DIR: ${{ secrets.EC2_DEPLOY_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require deploy secrets
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USER" ] || [ -z "${{ secrets.EC2_KEY }}" ]; then
+            echo "Missing EC2_HOST, EC2_USER, or EC2_KEY secrets — skipping deploy."
+            echo "Add them in GitHub → Settings → Secrets to enable production deploy."
+            exit 1
+          fi
+          echo "DEPLOY_DIR=${DEPLOY_DIR:-leviosai}" >> "$GITHUB_ENV"
+
+      - name: Add SSH key
+        run: |
+          echo "${{ secrets.EC2_KEY }}" | tr -d '\r' > ec2_key.pem
+          chmod 600 ec2_key.pem
+
+      - name: Validate SSH connectivity
+        run: |
+          echo "Checking TCP connectivity to $EC2_HOST:22..."
+          if ! timeout 15 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22"; then
+            echo "Unable to reach $EC2_HOST:22 from GitHub Actions."
+            exit 1
+          fi
+          ssh -i ec2_key.pem \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            "$EC2_USER@$EC2_HOST" "echo 'SSH reachable'"
+
+      - name: Sync app to EC2
+        run: |
+          REMOTE_DIR="/home/$EC2_USER/${DEPLOY_DIR:-leviosai}"
+          ssh -i ec2_key.pem \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            "$EC2_USER@$EC2_HOST" "mkdir -p '$REMOTE_DIR'"
+
+          rsync -avz --delete \
+            -e "ssh -i ec2_key.pem -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3" \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='client/node_modules' \
+            --exclude='.env' \
+            --exclude='recordings' \
+            --exclude='backups' \
+            --exclude='dist' \
+            --exclude='client/dist' \
+            ./ "$EC2_USER@$EC2_HOST:$REMOTE_DIR/"
+
+      - name: Install, build, and restart with PM2
+        run: |
+          ssh -i ec2_key.pem \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            "$EC2_USER@$EC2_HOST" << EOF
+          set -e
+          export NVM_DIR="\$HOME/.nvm"
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+          export PATH="\$HOME/.pm2/bin:\$PATH"
+
+          APP_DIR="\$HOME/${DEPLOY_DIR:-leviosai}"
+          cd "\$APP_DIR"
+
+          mkdir -p "\$HOME/logs"
+
+          echo "=== Pre-deploy cleanup ==="
+          free -h
+          pm2 stop leviosai 2>/dev/null || pm2 stop all 2>/dev/null || true
+          pkill -f "vite build" 2>/dev/null || true
+          npm cache clean --force 2>/dev/null || true
+          rm -rf client/node_modules/.vite /tmp/vite-* /tmp/npm-* 2>/dev/null || true
+
+          if [ ! -f .env ]; then
+            echo "ERROR: \$APP_DIR/.env is missing on the server. Create it once with production secrets."
+            exit 1
+          fi
+
+          echo "Installing server dependencies..."
+          npm ci || npm install
+
+          echo "Installing + building client..."
+          cd client
+          npm ci || npm install
+          npm run build
+          cd ..
+
+          echo "Starting Leviosai with PM2..."
+          if [ -f ecosystem.config.cjs ]; then
+            pm2 startOrReload ecosystem.config.cjs --env production
+          elif [ -f ecosystem.config.js ]; then
+            pm2 startOrReload ecosystem.config.js --env production
+          else
+            pm2 delete leviosai 2>/dev/null || true
+            pm2 start "npx tsx server.ts" --name leviosai --time
+          fi
+
+          pm2 save
+          pm2 list
+          echo "Leviosai deployment complete."
+          EOF
