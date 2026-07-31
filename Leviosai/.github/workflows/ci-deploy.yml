@@ -38,6 +38,18 @@ jobs:
       - name: Install client dependencies
         run: npm run client:install
 
+      - name: Write app .env from secrets
+        env:
+          LEVIOSAI_ENV: ${{ secrets.LEVIOSAI_ENV }}
+        run: |
+          if [ -z "$LEVIOSAI_ENV" ]; then
+            echo "Missing LEVIOSAI_ENV secret (full app .env). Add it in GitHub → Settings → Secrets."
+            exit 1
+          fi
+          printf '%s\n' "$LEVIOSAI_ENV" > .env
+          test -s .env
+          grep -q '^DATABASE_URL=' .env
+
       - name: Run unit tests (Modules 1–10 + helpers)
         run: npm run test:ci
         env:
