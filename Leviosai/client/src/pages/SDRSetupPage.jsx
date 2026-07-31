@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
-import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
+// Calendar booking UI paused — not in SOW/plan scope (Google Meet / calendar platforms)
+// import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
 
 const WEBHOOKS = [
@@ -41,7 +42,7 @@ const PIPELINE_STEPS = [
   {
     id: "branch",
     title: "3. Call outcome branches",
-    body: "Answered / booked → sequence can complete and optionally book Google Calendar. No-answer / voicemail → wait, then SMS. Busy → short retries, then SMS. Failed → logged and fall-through per rules.",
+    body: "Answered / booked → sequence can complete and CRM is updated. No-answer / voicemail → wait, then SMS. Busy → short retries, then SMS. Failed → logged and fall-through per rules.",
   },
   {
     id: "sms",
@@ -56,7 +57,7 @@ const PIPELINE_STEPS = [
   {
     id: "crm",
     title: "6. CRM + calling panel",
-    body: "Every step is written to SDR logs. Call recordings and transcripts appear under AI Calling. Bookings sync to the Google Calendar connected here.",
+    body: "Every step is written to SDR logs. Call recordings and transcripts appear under AI Calling. Booked outcomes update the CRM.",
   },
 ];
 
@@ -221,7 +222,7 @@ function HowSdrWorks({ onNavigate }) {
             <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>Where to configure each piece</div>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.7 }}>
               <li>
-                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio phone/SMS, Google Calendar, webhook URLs
+                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio phone/SMS and webhook URLs
               </li>
               <li>
                 <strong style={{ color: COLORS.text }}>SDR Agent</strong> — single system prompt (incl. objections), knowledge base, SMS/email templates, thresholds, activate
@@ -235,6 +236,11 @@ function HowSdrWorks({ onNavigate }) {
               <li>
                 <strong style={{ color: COLORS.text }}>Billing</strong> — subscription required before SDR can go live
               </li>
+              {/* Calendar / Meet booking platforms — paused (out of SOW/plan scope)
+              <li>
+                <strong style={{ color: COLORS.text }}>Calendar</strong> — Google Calendar for appointment sync
+              </li>
+              */}
             </ul>
           </div>
 
@@ -256,7 +262,8 @@ function HowSdrWorks({ onNavigate }) {
 }
 
 /**
- * SDR Setup — how-it-works guide + phone (Twilio), calendar, and links to voice/prompt config.
+ * SDR Setup — how-it-works guide + phone (Twilio) and links to voice/prompt config.
+ * Calendar / Meet booking UI is commented out (not in SOW/plan scope).
  */
 export default function SDRSetupPage() {
   const navigate = useNavigate();
@@ -290,6 +297,7 @@ export default function SDRSetupPage() {
         <TwilioByotCard />
       </SetupSection>
 
+      {/* Calendar / Google Meet / booking platforms — paused (not in SOW or IMPLEMENTATION_PLAN)
       <SetupSection
         step="2"
         title="Calendar bookings"
@@ -297,9 +305,10 @@ export default function SDRSetupPage() {
       >
         <CalendarConnections colors={COLORS} styles={S} />
       </SetupSection>
+      */}
 
       <SetupSection
-        step="3"
+        step="2"
         title="Agent content"
         subtitle="The live call agent is a single-prompt system. Set persona, objections, and KB on SDR Agent; pick the ElevenLabs voice on Voice AI."
       >
@@ -329,7 +338,7 @@ export default function SDRSetupPage() {
       </SetupSection>
 
       <SetupSection
-        step="4"
+        step="3"
         title="Twilio webhook URLs"
         subtitle="Point your Twilio number (or messaging service) at these endpoints on this deployment."
       >
