@@ -4,9 +4,9 @@
   "description": "Leviosai AI-Powered Sales CRM",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
+    "dev": "node init && tsx watch server.ts",
+    "build": "node init && tsc",
+    "start": "node init && node dist/server.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",

@@ -8,11 +8,7 @@ ZeluAI_Scope_of_Work_*.docx
 ZeluAI_Scope_of_Work_*.txt
 
 # Secrets & local env
-.env
-.env.*
 !.env.example
-**/.env
-**/.env.*
 !**/.env.example
 **/env file
 Leviosai/env file
@@ -45,3 +41,4 @@ Leviosai/backups/
 
 # Nested git metadata if present under Leviosai/
 Leviosai/.git/
+config.bat
