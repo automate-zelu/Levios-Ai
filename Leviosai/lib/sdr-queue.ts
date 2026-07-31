@@ -21,7 +21,7 @@ import {
 import { planSmsFallthrough } from "./sdr-m1-logic.js";
 import { computeNextEnrollAfter } from "./sdr-eligibility.js";
 import { eq } from "drizzle-orm";
-import { sendEmail } from "./resend.js";
+import { sendEmailViaGmail } from "./gmail/send.js";
 import { getClientForWorkspace } from "./twilio-subaccount.js";
 import { isSdrDryRun } from "./sdr-dry-run.js";
 
@@ -339,9 +339,20 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
   const subject = config.emailSubject.replace(/\{\{lead_name\}\}/gi, `${lead.firstName}`);
   const body    = config.emailBody.replace(/\{\{lead_name\}\}/gi, `${lead.firstName}`);
 
+  const [workspace] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, enrollment.workspaceId));
+
+  if (!workspace?.organizationId) {
+    console.error(`SDR: SEND_EMAIL aborted — workspace ${enrollment.workspaceId} missing organization`);
+    return;
+  }
+
+  // BYOT Gmail — same model as Twilio for SMS (send from the customer's own account)
   const result = isSdrDryRun()
-    ? { success: true as const, id: `dry_email_${Date.now()}` }
-    : await sendEmail(lead.email, subject, body);
+    ? { success: true as const, id: `dry_email_${Date.now()}`, from: "dry-run@leviosai.test" }
+    : await sendEmailViaGmail(workspace.organizationId, lead.email, subject, body);
 
   if (isSdrDryRun()) {
     console.log(`SDR: DRY RUN email for ${enrollmentId}: ${subject}`);

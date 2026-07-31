@@ -4,6 +4,7 @@ import { COLORS, S } from "../theme.js";
 // Calendar booking UI paused — not in SOW/plan scope (Google Meet / calendar platforms)
 // import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
+import GmailConnectCard from "../components/sdr/GmailConnectCard.jsx";
 
 const WEBHOOKS = [
   {
@@ -52,7 +53,7 @@ const PIPELINE_STEPS = [
   {
     id: "email",
     title: "5. Email follow-up",
-    body: "Your email subject/body are sent via Resend/SendGrid. Reply → engaged. Timeout → enrollment marked exhausted; re-enrollment waits re-enroll days.",
+    body: "Your email subject/body are sent from the Gmail account you connected on SDR Setup (same BYOT model as Twilio for SMS). Reply → engaged. Timeout → enrollment marked exhausted; re-enrollment waits re-enroll days.",
   },
   {
     id: "crm",
@@ -222,7 +223,7 @@ function HowSdrWorks({ onNavigate }) {
             <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>Where to configure each piece</div>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.7 }}>
               <li>
-                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio phone/SMS and webhook URLs
+                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio phone/SMS, Gmail for email, webhook URLs
               </li>
               <li>
                 <strong style={{ color: COLORS.text }}>SDR Agent</strong> — single system prompt (incl. objections), knowledge base, SMS/email templates, thresholds, activate
@@ -297,6 +298,14 @@ export default function SDRSetupPage() {
         <TwilioByotCard />
       </SetupSection>
 
+      <SetupSection
+        step="2"
+        title="Email (Gmail)"
+        subtitle="Connect your Gmail so SDR follow-up emails send from your own account — n8n-style Google login, not a shared platform mailbox."
+      >
+        <GmailConnectCard />
+      </SetupSection>
+
       {/* Calendar / Google Meet / booking platforms — paused (not in SOW or IMPLEMENTATION_PLAN)
       <SetupSection
         step="2"
@@ -308,7 +317,7 @@ export default function SDRSetupPage() {
       */}
 
       <SetupSection
-        step="2"
+        step="3"
         title="Agent content"
         subtitle="The live call agent is a single-prompt system. Set persona, objections, and KB on SDR Agent; pick the ElevenLabs voice on Voice AI."
       >
@@ -338,7 +347,7 @@ export default function SDRSetupPage() {
       </SetupSection>
 
       <SetupSection
-        step="3"
+        step="4"
         title="Twilio webhook URLs"
         subtitle="Point your Twilio number (or messaging service) at these endpoints on this deployment."
       >

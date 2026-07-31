@@ -186,6 +186,13 @@ export const calendarApi = {
     }),
 };
 
+// Gmail BYOT — send SDR follow-ups from the customer's Gmail (n8n-style OAuth)
+export const gmailApi = {
+  status: () => request("/api/gmail/status"),
+  startOAuth: () => request("/api/gmail/oauth/start", { method: "POST", body: "{}" }),
+  disconnect: () => request("/api/gmail/connect", { method: "DELETE" }),
+};
+
 // Health
 export const health = {
   check: () => request("/api/health"),

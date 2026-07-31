@@ -25,6 +25,7 @@ import twilioByotRoutes from "./routes/twilio-byot.js";
 import callRoutes, { handleCallStream } from "./routes/call.js";
 import teamRoutes from "./routes/team.js";
 import calendarRoutes from "./routes/calendar.js";
+import gmailRoutes from "./routes/gmail.js";
 import { rebuildAllKnowledgeBases } from "./lib/calling/langchain-kb.js";
 import { Reactor } from "./reactor/reactor.js";
 import { createAllAgents } from "./reactor/agents/index.js";
@@ -71,6 +72,7 @@ app.use(twilioByotRoutes);
 app.use(callRoutes);
 app.use(teamRoutes);
 app.use(calendarRoutes);
+app.use(gmailRoutes);
 
 // Sentry error handler (must be after routes, before Vite/static)
 Sentry.setupExpressErrorHandler(app);

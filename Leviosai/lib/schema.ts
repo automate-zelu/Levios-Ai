@@ -282,6 +282,24 @@ export const calendarConnections = pgTable("calendar_connections", {
 
 export type CalendarConnection = typeof calendarConnections.$inferSelect;
 
+// ─── GMAIL CONNECTIONS (BYOT — send SDR email from user's Gmail) ─────────────
+export const gmailConnections = pgTable("gmail_connections", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  accountEmail: text("account_email"),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  tokenExpiresAt: timestamp("token_expires_at"),
+  scopes: text("scopes"),
+  connectedAt: timestamp("connected_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type GmailConnection = typeof gmailConnections.$inferSelect;
+
 // ─── INSERT SCHEMAS ─────────────────────────────────────────────────────────
 
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({
