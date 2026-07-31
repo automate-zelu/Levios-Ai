@@ -49,6 +49,8 @@ describe("M3 component inventory", () => {
     "client/src/components/sdr/KnowledgeBaseInput.jsx",
     "client/src/components/sdr/SMSTemplateEditor.jsx",
     "client/src/components/sdr/EmailTemplateEditor.jsx",
+    "client/src/components/sdr/TemplateVariableField.jsx",
+    "client/src/components/sdr/templateVars.js",
     "client/src/components/sdr/ThresholdSettings.jsx",
     "client/src/components/sdr/ExecutionLogTable.jsx",
     "client/src/components/sdr/SDRAnalytics.jsx",

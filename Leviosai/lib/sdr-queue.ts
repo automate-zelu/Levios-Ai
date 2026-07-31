@@ -12,7 +12,7 @@
 
 import { Queue, Worker, type ConnectionOptions } from "bullmq";
 import { db } from "./db.js";
-import { sdrEnrollments, sdrConfigs, workspaces, sdrLogs } from "./schema.js";
+import { sdrEnrollments, sdrConfigs, workspaces, sdrLogs, organizations } from "./schema.js";
 import type { EnrollmentStatus } from "./schema.js";
 import {
   stateMachine,
@@ -24,6 +24,7 @@ import { eq } from "drizzle-orm";
 import { sendEmailViaGmail } from "./gmail/send.js";
 import { getClientForWorkspace } from "./twilio-subaccount.js";
 import { isSdrDryRun } from "./sdr-dry-run.js";
+import { buildSdrTemplateContext, renderSdrTemplate } from "./sdr-template-vars.js";
 
 // ─── REDIS CONNECTION ─────────────────────────────────────────────────────────
 // BullMQ needs its own ioredis connection config.
@@ -243,8 +244,13 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
     return;
   }
 
-  // Render SMS template with lead name substitution
-  const body = config.smsTemplate.replace(/\{\{lead_name\}\}/gi, `${lead.firstName}`);
+  const [org] = workspace.organizationId
+    ? await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, workspace.organizationId))
+    : [null];
+  const body = renderSdrTemplate(
+    config.smsTemplate,
+    buildSdrTemplateContext(lead, org?.name)
+  );
 
   let smsSid: string | undefined;
   let smsError: string | undefined;
@@ -335,10 +341,6 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
     return;
   }
 
-  // Render email template with lead name substitution
-  const subject = config.emailSubject.replace(/\{\{lead_name\}\}/gi, `${lead.firstName}`);
-  const body    = config.emailBody.replace(/\{\{lead_name\}\}/gi, `${lead.firstName}`);
-
   const [workspace] = await db
     .select()
     .from(workspaces)
@@ -348,6 +350,20 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
     console.error(`SDR: SEND_EMAIL aborted — workspace ${enrollment.workspaceId} missing organization`);
     return;
   }
+
+  const [org] = await db
+    .select({ name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, workspace.organizationId));
+
+  const subject = renderSdrTemplate(
+    config.emailSubject,
+    buildSdrTemplateContext(lead, org?.name)
+  );
+  const body = renderSdrTemplate(
+    config.emailBody,
+    buildSdrTemplateContext(lead, org?.name)
+  );
 
   // BYOT Gmail — same model as Twilio for SMS (send from the customer's own account)
   const result = isSdrDryRun()

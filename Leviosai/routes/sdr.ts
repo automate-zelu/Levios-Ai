@@ -20,6 +20,7 @@ import { enforceTierLimits } from "../middleware/tierEnforcement.js";
 import { evaluateEnrollmentEligibility } from "../lib/sdr-eligibility.js";
 import { buildWorkspaceVectorStore } from "../lib/calling/langchain-kb.js";
 import { shouldRebuildKnowledgeBase } from "../lib/calling/kb-helpers.js";
+import { SDR_TEMPLATE_VARS } from "../lib/sdr-template-vars.js";
 import {
   eq,
   and,
@@ -32,6 +33,15 @@ const router = Router();
 
 // All SDR routes require auth + workspace scope
 router.use("/api/sdr", requireAuth, workspaceScope);
+
+// ─── GET /api/sdr/template-vars ───────────────────────────────────────────────
+// Variable catalog for SMS/email template editors (@-mention picker).
+router.get("/api/sdr/template-vars", (_req: Request, res: Response) => {
+  res.json({
+    vars: SDR_TEMPLATE_VARS,
+    note: "Insert with @ in the editor. Tokens are stored as {{key}}. New vars require CRM/workspace fields behind them.",
+  });
+});
 
 // ─── GET /api/sdr/config ──────────────────────────────────────────────────────
 // Returns the workspace's current SDR config (or null if not yet created).

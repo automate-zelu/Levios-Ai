@@ -1,24 +1,22 @@
 import { COLORS, S } from "../../theme.js";
+import { TemplateVariableField } from "./TemplateVariableField.jsx";
+import { renderTemplatePreview } from "./templateVars.js";
 
 export function SMSTemplateEditor({ value, onChange }) {
   const over = (value?.length || 0) > 160;
-  const preview = (value || "").replace(/\{\{lead_name\}\}/gi, "Alex");
+  const preview = renderTemplatePreview(value || "");
 
   return (
     <div style={S.card}>
       <div style={S.cardHeader}>SMS Follow-up Template</div>
-      <input
-        style={{ ...S.input, marginBottom: 8 }}
+      <TemplateVariableField
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Hi {{lead_name}}, this is Alex from…"
-        aria-label="SMS template"
+        onChange={onChange}
+        ariaLabel="SMS template"
+        placeholder="Hi @Lead first name — type @ to insert variables"
       />
-      <div style={{ fontSize: 11, color: over ? COLORS.red : COLORS.textMuted, textAlign: "right" }}>
+      <div style={{ fontSize: 11, color: over ? COLORS.red : COLORS.textMuted, textAlign: "right", marginTop: 4 }}>
         {value?.length || 0}/160 {over && "⚠ Will split into multiple messages"}
-      </div>
-      <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
-        Use <code style={{ background: COLORS.surfaceAlt, padding: "1px 4px", borderRadius: 3 }}>{"{{lead_name}}"}</code> for personalization
       </div>
       {value?.trim() && (
         <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: COLORS.surfaceAlt, border: `1px solid ${COLORS.border}` }}>

@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { COLORS, S } from "../../theme.js";
+import { TemplateVariableField } from "./TemplateVariableField.jsx";
+import { renderTemplatePreview } from "./templateVars.js";
 
 export function EmailTemplateEditor({ subject, body, onSubjectChange, onBodyChange }) {
   const [preview, setPreview] = useState(false);
-  const previewSubject = (subject || "").replace(/\{\{lead_name\}\}/gi, "Alex");
-  const previewBody = (body || "").replace(/\{\{lead_name\}\}/gi, "Alex");
+  const previewSubject = renderTemplatePreview(subject || "");
+  const previewBody = renderTemplatePreview(body || "");
 
   return (
     <div style={S.card}>
@@ -28,20 +30,26 @@ export function EmailTemplateEditor({ subject, body, onSubjectChange, onBodyChan
         </div>
       ) : (
         <>
-          <input
-            style={{ ...S.input, marginBottom: 10 }}
-            value={subject}
-            onChange={(e) => onSubjectChange(e.target.value)}
-            placeholder="Subject: Quick follow-up, {{lead_name}}"
-            aria-label="Email subject"
-          />
-          <textarea
-            value={body}
-            onChange={(e) => onBodyChange(e.target.value)}
-            style={{ ...S.input, minHeight: 120, resize: "vertical" }}
-            placeholder={"Hi {{lead_name}},\n\nI tried to reach you…"}
-            aria-label="Email body"
-          />
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 500 }}>Subject</div>
+            <TemplateVariableField
+              value={subject}
+              onChange={onSubjectChange}
+              ariaLabel="Email subject"
+              placeholder="Checking in from @Your company"
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 500 }}>Body</div>
+            <TemplateVariableField
+              multiline
+              rows={6}
+              value={body}
+              onChange={onBodyChange}
+              ariaLabel="Email body"
+              placeholder={"Hi @Lead first name,\n\nI tried to reach you…"}
+            />
+          </div>
         </>
       )}
     </div>
