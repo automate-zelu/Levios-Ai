@@ -2449,7 +2449,7 @@ function ProposalsPage() {
 // VOICE AI
 // ============================================================
 function VoiceAIPage() {
-  const [activeTab, setActiveTab]             = useState("Voices");
+  const navigate = useNavigate();
   const [voices, setVoices]                   = useState([]);
   const [voicesLoading, setVoicesLoading]     = useState(false);
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
@@ -2494,134 +2494,91 @@ function VoiceAIPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}><h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Voice AI Configuration</h2><p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>Configure conversational AI agents</p></div>
-      <TabBar tabs={["Voices", "Talk Tracks", "Objection Handling", "Compliance"]} active={activeTab} onChange={setActiveTab} />
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Voice AI</h2>
+        <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+          Choose the ElevenLabs voice for outbound AI calls. Conversation behavior is a single system prompt — not separate talk-track or objection modules.
+        </p>
+      </div>
 
-      {activeTab === "Voices" && (
-        <>
-          <div style={S.card}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <div>
-                <div style={S.cardHeader}>AI Voice</div>
-                <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>Select the ElevenLabs voice your AI agent will use on calls. Click ▶ to preview.</div>
-              </div>
-              <button
-                style={{ ...S.btn("primary"), padding: "8px 20px", opacity: savingVoice ? 0.6 : 1 }}
-                onClick={saveVoice}
-                disabled={savingVoice || !selectedVoiceId}
-              >
-                {voiceSaved ? "✓ Saved" : savingVoice ? "Saving…" : "Save Voice"}
-              </button>
-            </div>
+      <div style={{
+        ...S.card,
+        marginBottom: 16,
+        padding: 14,
+        border: `1px solid ${COLORS.border}`,
+        background: COLORS.surfaceAlt,
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Single-prompt agent</div>
+        <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.55, marginBottom: 10 }}>
+          Opener, tone, objection handling, and booking goals all belong in one system prompt on the SDR Agent page.
+          The live call agent loads that prompt only — there is no separate objection-handling UI or workflow.
+        </div>
+        <button type="button" style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 12 }} onClick={() => navigate("/sdr")}>
+          Edit system prompt on SDR Agent →
+        </button>
+      </div>
 
-            {voicesLoading ? (
-              <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>Loading voices from ElevenLabs…</div>
-            ) : voices.length === 0 ? (
-              <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>No voices found. Check that ELEVENLABS_API_KEY is set.</div>
-            ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                {voices.map(v => {
-                  const isSelected  = selectedVoiceId === v.id;
-                  const isPreviewing = playingId === v.id;
-                  return (
-                    <div
-                      key={v.id}
-                      onClick={() => setSelectedVoiceId(v.id)}
-                      style={{
-                        border: `2px solid ${isSelected ? COLORS.orange : COLORS.border}`,
-                        borderRadius: 10, padding: "12px 14px", cursor: "pointer",
-                        background: isSelected ? COLORS.orangeGlow : COLORS.surfaceAlt,
-                        display: "flex", alignItems: "center", gap: 12,
-                        transition: "border-color 0.15s, background 0.15s",
-                      }}
-                    >
-                      <button
-                        onClick={e => { e.stopPropagation(); playPreview(v.id, v.previewUrl); }}
-                        style={{
-                          width: 36, height: 36, borderRadius: "50%", border: "none", cursor: "pointer",
-                          background: isPreviewing ? COLORS.red : isSelected ? COLORS.orange : COLORS.border,
-                          color: "#fff", fontSize: 13, flexShrink: 0,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                        }}
-                        title={isPreviewing ? "Stop" : "Preview"}
-                      >
-                        {isPreviewing ? "■" : "▶"}
-                      </button>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</div>
-                        <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "monospace", marginTop: 2 }}>{v.id.slice(0, 22)}…</div>
-                      </div>
-                      {isSelected && <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.orange, flexShrink: 0 }} />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={S.cardHeader}>AI Voice</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>Select the ElevenLabs voice your AI agent will use on calls. Click ▶ to preview.</div>
           </div>
-        </>
-      )}
+          <button
+            type="button"
+            style={{ ...S.btn("primary"), padding: "8px 20px", opacity: savingVoice ? 0.6 : 1 }}
+            onClick={saveVoice}
+            disabled={savingVoice || !selectedVoiceId}
+          >
+            {voiceSaved ? "✓ Saved" : savingVoice ? "Saving…" : "Save Voice"}
+          </button>
+        </div>
 
-      {activeTab === "Talk Tracks" && (
-        <div style={S.card}>
-          <div style={S.cardHeader}><span>Industry Talk Tracks</span><span style={{ fontSize: 11, color: COLORS.green }}>🧠 AI Learning: Active</span></div>
-          {[
-            { industry: "Solar", opener: "Hi [Name], this is [Agent] calling on behalf of [Company]. I noticed you'd explored going solar a while back — utility rates in your area have gone up about 12% since we last connected, and there are some new incentives that could make this a great time to take another look. Do you have a quick minute?", effectiveness: 78 },
-            { industry: "HVAC", opener: "Hi [Name], this is [Agent] with [Company]. With the weather changing, a lot of homeowners are finding now is the perfect time to upgrade. We have some new efficiency rebates. Can I share a couple options?", effectiveness: 72 },
-            { industry: "Insurance", opener: "Hi [Name], [Agent] here from [Company]. When we last spoke, you were looking at better coverage at lower premiums. We've partnered with new carriers — worth a quick chat?", effectiveness: 81 },
-          ].map((t, i) => (
-            <div key={i} style={{ padding: 16, borderRadius: 10, border: `1px solid ${COLORS.border}`, marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 600 }}>{t.industry}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 11, color: COLORS.textMuted }}>Effectiveness:</span><ProgressBar value={t.effectiveness} color={t.effectiveness > 75 ? COLORS.green : COLORS.orange} showLabel /></div>
-                  <VoicePreviewButton voiceName="Sarah" voiceGender="Female" accent="American"
-                    sample={t.opener.replace(/\[Name\]/g, "there").replace(/\[Agent\]/g, "Sarah").replace(/\[Company\]/g, "SunPower Solar")} />
+        {voicesLoading ? (
+          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>Loading voices from ElevenLabs…</div>
+        ) : voices.length === 0 ? (
+          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>No voices found. Check that ELEVENLABS_API_KEY is set.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+            {voices.map(v => {
+              const isSelected  = selectedVoiceId === v.id;
+              const isPreviewing = playingId === v.id;
+              return (
+                <div
+                  key={v.id}
+                  onClick={() => setSelectedVoiceId(v.id)}
+                  style={{
+                    border: `2px solid ${isSelected ? COLORS.orange : COLORS.border}`,
+                    borderRadius: 10, padding: "12px 14px", cursor: "pointer",
+                    background: isSelected ? COLORS.orangeGlow : COLORS.surfaceAlt,
+                    display: "flex", alignItems: "center", gap: 12,
+                    transition: "border-color 0.15s, background 0.15s",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); playPreview(v.id, v.previewUrl); }}
+                    style={{
+                      width: 36, height: 36, borderRadius: "50%", border: "none", cursor: "pointer",
+                      background: isPreviewing ? COLORS.red : isSelected ? COLORS.orange : COLORS.border,
+                      color: "#fff", fontSize: 13, flexShrink: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                    title={isPreviewing ? "Stop" : "Preview"}
+                  >
+                    {isPreviewing ? "■" : "▶"}
+                  </button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</div>
+                    <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "monospace", marginTop: 2 }}>{v.id.slice(0, 22)}…</div>
+                  </div>
+                  {isSelected && <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.orange, flexShrink: 0 }} />}
                 </div>
-              </div>
-              <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6, fontStyle: "italic", padding: 12, background: COLORS.surfaceAlt, borderRadius: 6 }}>"{t.opener}"</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {activeTab === "Objection Handling" && (
-        <div style={S.card}>
-          <div style={S.cardHeader}><span>Objection Handling</span><span style={{ fontSize: 11, color: COLORS.textMuted }}>Finesse over force</span></div>
-          {[
-            { obj: '"I\'m not interested."', resp: "I completely understand. Just so I'm not leaving you in the dark — are you aware that [relevant change]? No pressure, but if the timing ever feels right, we'd love to help.", strat: "Acknowledge → Plant seed → Soft close" },
-            { obj: '"The cost is too high."', resp: "That's a smart concern. What if I could show you an option where your monthly payment is actually less than what you're currently paying? Worth a quick look?", strat: "Validate → Reframe value → Curiosity close" },
-            { obj: '"I need to talk to my spouse."', resp: "Absolutely. Would it help if I set up a quick 15-minute call when you're both available?", strat: "Respect → Include both → Offer convenience" },
-            { obj: '"Now\'s not a good time."', resp: "No worries at all. When would be a better time for a quick 5-minute chat? I promise to keep it brief.", strat: "Respect time → Minimize commitment → Future appt" },
-            { obj: '"Stop calling me." (firm no)', resp: "[Immediate] I completely understand and I apologize for the inconvenience. I'm removing you from our list right now. Have a great day.", strat: "Instant opt-out → DNC list → TCPA compliant" },
-          ].map((o, i) => (
-            <div key={i} style={{ padding: 16, borderRadius: 10, border: `1px solid ${COLORS.border}`, marginBottom: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.red, marginBottom: 8 }}>{o.obj}</div>
-              <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6, padding: 12, background: COLORS.surfaceAlt, borderRadius: 6 }}><span style={{ color: COLORS.green }}>AI:</span> "{o.resp}"</div>
-              <div style={{ fontSize: 11, color: COLORS.orange, marginTop: 6 }}><strong>Strategy:</strong> {o.strat}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {activeTab === "Compliance" && (
-        <div style={S.card}>
-          <div style={S.cardHeader}><span>TCPA & Compliance</span><ComplianceBadge /></div>
-          <div style={{ padding: 16, background: `${COLORS.green}10`, borderRadius: 10, border: `1px solid ${COLORS.green}33` }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.green, marginBottom: 8 }}>All Compliance Active</div>
-            <div style={{ display: "grid", gap: 8 }}>
-              <Toggle value={true} label="Prior Express Written Consent (PEWC)" />
-              <Toggle value={true} label="One-to-One consent (FCC Jan 2026)" />
-              <Toggle value={true} label="AI voice disclosure at call start" />
-              <Toggle value={true} label="National + State DNC scrubbing" />
-              <Toggle value={true} label="Quiet hours (8am-9pm local)" />
-              <Toggle value={true} label="Instant opt-out on STOP/No" />
-              <Toggle value={true} label="Intent-to-opt-out AI detection" />
-              <Toggle value={true} label="A2P 10DLC for SMS" />
-              <Toggle value={true} label="Full audit trail logging" />
-            </div>
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
