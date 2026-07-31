@@ -6,24 +6,6 @@ import { COLORS, S } from "../theme.js";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
 import GmailConnectCard from "../components/sdr/GmailConnectCard.jsx";
 
-const WEBHOOKS = [
-  {
-    label: "Voice connect (inbound / answer)",
-    path: "/api/call/connect",
-    note: "Twilio voice webhook for AI media stream",
-  },
-  {
-    label: "Call status",
-    path: "/api/webhooks/twilio/call-status",
-    note: "Completed, busy, no-answer, failed",
-  },
-  {
-    label: "Inbound SMS",
-    path: "/api/webhooks/twilio/sms",
-    note: "SMS reply matching for SDR sequences",
-  },
-];
-
 const PIPELINE_STEPS = [
   {
     id: "gates",
@@ -223,7 +205,7 @@ function HowSdrWorks({ onNavigate }) {
             <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>Where to configure each piece</div>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.7 }}>
               <li>
-                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio phone/SMS, Gmail for email, webhook URLs
+                <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio (Account SID + Auth Token) and Gmail for email
               </li>
               <li>
                 <strong style={{ color: COLORS.text }}>SDR Agent</strong> — single system prompt (incl. objections), knowledge base, SMS/email templates, thresholds, activate
@@ -268,15 +250,6 @@ function HowSdrWorks({ onNavigate }) {
  */
 export default function SDRSetupPage() {
   const navigate = useNavigate();
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-
-  const copy = async (text) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      /* ignore */
-    }
-  };
 
   return (
     <div>
@@ -343,49 +316,6 @@ export default function SDRSetupPage() {
             cta="Open AI Calling →"
             onClick={() => navigate("/calling")}
           />
-        </div>
-      </SetupSection>
-
-      <SetupSection
-        step="4"
-        title="Twilio webhook URLs"
-        subtitle="Point your Twilio number (or messaging service) at these endpoints on this deployment."
-      >
-        <div style={{ display: "grid", gap: 10 }}>
-          {WEBHOOKS.map((w) => {
-            const url = `${origin}${w.path}`;
-            return (
-              <div
-                key={w.path}
-                style={{
-                  padding: 12,
-                  borderRadius: 8,
-                  border: `1px solid ${COLORS.border}`,
-                  background: COLORS.surfaceAlt,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{w.label}</div>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>{w.note}</div>
-                  <code style={{ display: "block", fontSize: 12, color: COLORS.teal, marginTop: 6, wordBreak: "break-all" }}>
-                    {url}
-                  </code>
-                </div>
-                <button
-                  type="button"
-                  style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 11, flexShrink: 0 }}
-                  onClick={() => copy(url)}
-                >
-                  Copy
-                </button>
-              </div>
-            );
-          })}
         </div>
       </SetupSection>
     </div>
