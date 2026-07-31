@@ -183,9 +183,9 @@ function HowSdrWorks({ onNavigate }) {
                 >
                   {label}
                 </span>
-                {i < FLOW_CHIPS.length - 1 && (
-                  <span style={{ color: COLORS.textDim, fontSize: 14 }}→</span>
-                )}
+                  {i < FLOW_CHIPS.length - 1 && (
+                    <span style={{ color: COLORS.textDim, fontSize: 14 }}>→</span>
+                  )}
               </div>
             ))}
           </div>
