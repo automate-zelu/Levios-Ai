@@ -9,8 +9,10 @@ import {
   sdrConfigs,
   sdrEnrollments,
   sdrLogs,
+  sdrCallSessions,
   workspaces,
   leads,
+  leadMessages,
 } from "../lib/schema.js";
 import { stateMachine } from "../lib/sdr-state-machine.js";
 import { enqueueJob } from "../lib/sdr-queue.js";
@@ -226,8 +228,30 @@ router.get("/api/sdr/enrollments", async (req: Request, res: Response) => {
 
     const [enrollmentRows, [{ total }]] = await Promise.all([
       db
-        .select()
+        .select({
+          id: sdrEnrollments.id,
+          workspaceId: sdrEnrollments.workspaceId,
+          leadId: sdrEnrollments.leadId,
+          status: sdrEnrollments.status,
+          currentStep: sdrEnrollments.currentStep,
+          callAttempts: sdrEnrollments.callAttempts,
+          enrolledAt: sdrEnrollments.enrolledAt,
+          callInitiatedAt: sdrEnrollments.callInitiatedAt,
+          smsSentAt: sdrEnrollments.smsSentAt,
+          emailSentAt: sdrEnrollments.emailSentAt,
+          exhaustedAt: sdrEnrollments.exhaustedAt,
+          nextEnrollAfter: sdrEnrollments.nextEnrollAfter,
+          callSessionId: sdrEnrollments.callSessionId,
+          bullmqJobId: sdrEnrollments.bullmqJobId,
+          createdAt: sdrEnrollments.createdAt,
+          updatedAt: sdrEnrollments.updatedAt,
+          leadFirstName: leads.firstName,
+          leadLastName: leads.lastName,
+          leadEmail: leads.email,
+          leadPhone: leads.phone,
+        })
         .from(sdrEnrollments)
+        .leftJoin(leads, eq(sdrEnrollments.leadId, leads.id))
         .where(filter)
         .orderBy(desc(sdrEnrollments.enrolledAt))
         .limit(limit)
@@ -269,20 +293,49 @@ router.get("/api/sdr/enrollments/:id", async (req: Request, res: Response) => {
 
     if (!enrollment) return res.status(404).json({ error: "Enrollment not found" });
 
-    const logs = await db
-      .select()
-      .from(sdrLogs)
-      .where(eq(sdrLogs.enrollmentId, enrollment.id))
-      .orderBy(sdrLogs.loggedAt);
+    const [logs, [lead], callSessions, messages] = await Promise.all([
+      db
+        .select()
+        .from(sdrLogs)
+        .where(eq(sdrLogs.enrollmentId, enrollment.id))
+        .orderBy(sdrLogs.loggedAt),
+      db
+        .select({
+          id: leads.id,
+          firstName: leads.firstName,
+          lastName: leads.lastName,
+          email: leads.email,
+          phone: leads.phone,
+        })
+        .from(leads)
+        .where(eq(leads.id, enrollment.leadId))
+        .limit(1),
+      db
+        .select()
+        .from(sdrCallSessions)
+        .where(eq(sdrCallSessions.enrollmentId, enrollment.id))
+        .orderBy(sdrCallSessions.startedAt),
+      db
+        .select()
+        .from(leadMessages)
+        .where(eq(leadMessages.leadId, enrollment.leadId))
+        .orderBy(leadMessages.createdAt),
+    ]);
 
-    res.json({ enrollment, logs });
+    res.json({
+      enrollment,
+      lead: lead ?? null,
+      logs,
+      callSessions,
+      messages,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // ─── GET /api/sdr/leads/:leadId/logs ─────────────────────────────────────────
-// All SDR log entries for a specific lead in this workspace.
+// Full SDR timeline for a lead: logs + enrollment + messages + call sessions.
 
 router.get("/api/sdr/leads/:leadId/logs", async (req: Request, res: Response) => {
   try {
@@ -315,7 +368,30 @@ router.get("/api/sdr/leads/:leadId/logs", async (req: Request, res: Response) =>
       .orderBy(desc(sdrEnrollments.enrolledAt))
       .limit(1);
 
-    res.json({ logs, enrollment: activeEnrollment ?? null });
+    const [messages, callSessions] = await Promise.all([
+      db
+        .select()
+        .from(leadMessages)
+        .where(eq(leadMessages.leadId, leadId))
+        .orderBy(leadMessages.createdAt),
+      db
+        .select()
+        .from(sdrCallSessions)
+        .where(
+          and(
+            eq(sdrCallSessions.workspaceId, workspaceId),
+            eq(sdrCallSessions.leadId, leadId)
+          )
+        )
+        .orderBy(sdrCallSessions.startedAt),
+    ]);
+
+    res.json({
+      logs,
+      enrollment: activeEnrollment ?? null,
+      messages,
+      callSessions,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

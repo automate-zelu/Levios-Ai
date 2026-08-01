@@ -7,19 +7,10 @@ import { SMSTemplateEditor } from "../components/sdr/SMSTemplateEditor.jsx";
 import { EmailTemplateEditor } from "../components/sdr/EmailTemplateEditor.jsx";
 import { ThresholdSettings } from "../components/sdr/ThresholdSettings.jsx";
 import { SDRAnalytics } from "../components/sdr/SDRAnalytics.jsx";
+import { SdrFlowTimeline, STATUS_COLORS } from "../components/sdr/SdrFlowTimeline.jsx";
 import { TierBadge } from "../components/billing/TierBadge.jsx";
 
-const ENROLLMENT_COLORS = {
-  pending: COLORS.yellow,
-  call_initiated: COLORS.blue,
-  call_busy: COLORS.orange,
-  call_no_answer: COLORS.textMuted,
-  sms_sent: COLORS.orange,
-  email_sent: COLORS.purple,
-  booked: COLORS.green,
-  exhausted: COLORS.red,
-  re_enrolled: COLORS.teal,
-};
+const ENROLLMENT_COLORS = STATUS_COLORS;
 
 const EMPTY_FORM = {
   systemPrompt: "", knowledgeBase: "", smsTemplate: "", emailSubject: "", emailBody: "",
@@ -36,6 +27,9 @@ export default function SDRConfigPage({ onNavigateBilling }) {
   const [activeTab, setActiveTab] = useState("config");
   const [form, setForm] = useState(EMPTY_FORM);
   const [message, setMessage] = useState("");
+  const [expandedEnrollmentId, setExpandedEnrollmentId] = useState(null);
+  const [enrollmentDetail, setEnrollmentDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     Promise.all([sdrApi.getConfig(), sdrApi.getAnalytics(), sdrApi.getEnrollments({ limit: 10 })])
@@ -83,6 +77,26 @@ export default function SDRConfigPage({ onNavigateBilling }) {
       setConfig(updated);
     } catch (e) {
       setMessage(e.message || "Status update failed");
+    }
+  };
+
+  const toggleEnrollmentDetail = async (enrollmentId) => {
+    if (expandedEnrollmentId === enrollmentId) {
+      setExpandedEnrollmentId(null);
+      setEnrollmentDetail(null);
+      return;
+    }
+    setExpandedEnrollmentId(enrollmentId);
+    setDetailLoading(true);
+    setEnrollmentDetail(null);
+    try {
+      const detail = await sdrApi.getEnrollment(enrollmentId);
+      setEnrollmentDetail(detail);
+    } catch (e) {
+      setMessage(e.message || "Failed to load enrollment flow");
+      setExpandedEnrollmentId(null);
+    } finally {
+      setDetailLoading(false);
     }
   };
 
@@ -170,30 +184,59 @@ export default function SDRConfigPage({ onNavigateBilling }) {
               No enrollments yet. Configure and activate the SDR agent to start enrolling dormant leads.
             </div>
           ) : (
-            <table style={S.table}>
-              <thead>
-                <tr>
-                  <th style={S.th}>Lead ID</th>
-                  <th style={S.th}>Status</th>
-                  <th style={S.th}>Step</th>
-                  <th style={S.th}>Enrolled</th>
-                  <th style={S.th}>Last Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {enrollments.map((e) => (
-                  <tr key={e.id}>
-                    <td style={S.td}>{e.leadId}</td>
-                    <td style={S.td}>
+            <div style={{ display: "grid", gap: 10 }}>
+              {enrollments.map((e) => {
+                const name = [e.leadFirstName, e.leadLastName].filter(Boolean).join(" ") || `Lead #${e.leadId}`;
+                const open = expandedEnrollmentId === e.id;
+                return (
+                  <div key={e.id} style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleEnrollmentDetail(e.id)}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "12px 14px",
+                        background: COLORS.surfaceAlt,
+                        border: "none",
+                        cursor: "pointer",
+                        color: "inherit",
+                        fontFamily: "inherit",
+                        display: "flex",
+                        gap: 12,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 160 }}>
+                        <div style={{ fontSize: 14, fontWeight: 650 }}>{name}</div>
+                        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
+                          {[e.leadEmail, e.leadPhone].filter(Boolean).join(" · ") || `Lead ID ${e.leadId}`}
+                        </div>
+                      </div>
                       <span style={S.badge(ENROLLMENT_COLORS[e.status] || COLORS.textMuted)}>{e.status}</span>
-                    </td>
-                    <td style={S.td}>{e.currentStep}</td>
-                    <td style={S.td}>{new Date(e.enrolledAt).toLocaleDateString()}</td>
-                    <td style={S.td}>{new Date(e.updatedAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <span style={{ fontSize: 11, color: COLORS.textMuted }}>
+                        {new Date(e.updatedAt || e.enrolledAt).toLocaleString()}
+                      </span>
+                      <span style={{ fontSize: 12, color: COLORS.textMuted }}>{open ? "Hide ▲" : "Flow ▼"}</span>
+                    </button>
+                    {open && (
+                      <div style={{ padding: 16, borderTop: `1px solid ${COLORS.border}` }}>
+                        {detailLoading && !enrollmentDetail ? (
+                          <div style={{ color: COLORS.textMuted, fontSize: 13 }}>Loading full flow…</div>
+                        ) : (
+                          <SdrFlowTimeline
+                            logs={enrollmentDetail?.logs || []}
+                            messages={enrollmentDetail?.messages || []}
+                            callSessions={enrollmentDetail?.callSessions || []}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}

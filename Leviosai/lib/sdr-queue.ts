@@ -25,6 +25,7 @@ import { sendEmailViaGmail } from "./gmail/send.js";
 import { getClientForWorkspace } from "./twilio-subaccount.js";
 import { isSdrDryRun } from "./sdr-dry-run.js";
 import { buildSdrTemplateContext, renderSdrTemplate } from "./sdr-template-vars.js";
+import { storage } from "./storage.js";
 
 // ─── REDIS CONNECTION ─────────────────────────────────────────────────────────
 // BullMQ needs its own ioredis connection config.
@@ -254,15 +255,18 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
 
   let smsSid: string | undefined;
   let smsError: string | undefined;
+  let fromNumberUsed: string | undefined;
 
   try {
     if (isSdrDryRun()) {
       smsSid = `dry_sms_${Date.now()}`;
+      fromNumberUsed = workspace.twilioPhoneNumber || "dry-run";
       console.log(`SDR: DRY RUN SMS for ${enrollmentId}: ${body.slice(0, 80)}`);
     } else {
       const { client: twilioClient, fromNumber } = getClientForWorkspace(workspace);
       if (!fromNumber) throw new Error("No phone number provisioned for this workspace");
       if (!lead.phone) throw new Error("Lead has no phone number");
+      fromNumberUsed = fromNumber;
       const message = await twilioClient.messages.create({
         body,
         from: fromNumber,
@@ -275,6 +279,19 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
   }
 
   if (smsSid) {
+    try {
+      await storage.createLeadMessage({
+        leadId: lead.id,
+        channel: "sms",
+        content: body,
+        status: "sent",
+        direction: "outbound",
+        aiGenerated: true,
+      });
+    } catch (err: any) {
+      console.warn(`SDR: failed to store outbound SMS message for lead ${lead.id}:`, err.message);
+    }
+
     // Re-read status to survive races with a parallel worker/processor.
     const [fresh] = await db
       .select({ status: sdrEnrollments.status })
@@ -285,7 +302,14 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
     if (freshStatus === "sms_sent") {
       console.log(`SDR: SEND_SMS already applied for ${enrollmentId} — ensuring timeout job`);
     } else if (freshStatus && SMS_READY_STATUSES.includes(freshStatus)) {
-      await stateMachine.transition(enrollmentId, "sms_sent", { smsSid });
+      await stateMachine.transition(enrollmentId, "sms_sent", {
+        smsSid,
+        channel: "sms",
+        direction: "outbound",
+        to: lead.phone,
+        from: fromNumberUsed,
+        body,
+      });
     } else {
       console.warn(
         `SDR: SEND_SMS skipped transition for ${enrollmentId} — status ${freshStatus}`
@@ -299,6 +323,17 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
     await storeEnrollmentJobId(enrollmentId, timeoutJobId);
   } else {
     console.error(`SDR: SMS failed for enrollment ${enrollmentId}:`, smsError);
+    await db.insert(sdrLogs).values({
+      workspaceId:  enrollment.workspaceId,
+      enrollmentId: enrollment.id,
+      leadId:       enrollment.leadId,
+      step:         enrollment.currentStep,
+      stepName:     "sms_failed",
+      outcome:      "failed",
+      payload:      { error: smsError, to: lead.phone, body },
+      errorMessage: smsError || "SMS send failed",
+      loggedAt:     new Date(),
+    });
   }
 }
 
@@ -375,6 +410,19 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
   }
 
   if (result.success) {
+    try {
+      await storage.createLeadMessage({
+        leadId: lead.id,
+        channel: "email",
+        content: `Subject: ${subject}\n\n${body}`,
+        status: "sent",
+        direction: "outbound",
+        aiGenerated: true,
+      });
+    } catch (err: any) {
+      console.warn(`SDR: failed to store outbound email message for lead ${lead.id}:`, err.message);
+    }
+
     const [fresh] = await db
       .select({ status: sdrEnrollments.status })
       .from(sdrEnrollments)
@@ -385,6 +433,12 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
     } else if (fresh?.status === "sms_sent") {
       await stateMachine.transition(enrollmentId, "email_sent", {
         emailId: (result as any).id,
+        channel: "email",
+        direction: "outbound",
+        to: lead.email,
+        from: (result as any).from,
+        subject,
+        body,
       });
     } else {
       console.warn(
@@ -399,6 +453,17 @@ async function handleSendEmail(enrollmentId: string): Promise<void> {
     await storeEnrollmentJobId(enrollmentId, timeoutJobId);
   } else {
     console.error(`SDR: Email failed for enrollment ${enrollmentId}:`, result.error);
+    await db.insert(sdrLogs).values({
+      workspaceId:  enrollment.workspaceId,
+      enrollmentId: enrollment.id,
+      leadId:       enrollment.leadId,
+      step:         enrollment.currentStep,
+      stepName:     "email_failed",
+      outcome:      "failed",
+      payload:      { error: result.error, to: lead.email, subject, body },
+      errorMessage: result.error || "Email send failed",
+      loggedAt:     new Date(),
+    });
   }
 }
 

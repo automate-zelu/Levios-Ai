@@ -59,8 +59,11 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
           await cancelJob(smsEnrollment.bullmqJobId);
         }
         await stateMachine.transition(smsEnrollment.id, "sms_replied", {
+          channel: "sms",
+          direction: "inbound",
           replyText: Body.substring(0, 500),
           from: From,
+          messageSid: MessageSid,
         });
         console.log(`✅ SDR: SMS reply from ${From} — enrollment ${smsEnrollment.id} → sms_replied`);
       }
@@ -206,11 +209,27 @@ router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => 
         await cancelJob(emailEnrollment.bullmqJobId);
       }
       await stateMachine.transition(emailEnrollment.id, "email_replied", {
+        channel: "email",
+        direction: "inbound",
         replySubject: subject?.substring(0, 200),
         replyText:    text?.substring(0, 500),
         from: replyEmail,
       });
       console.log(`✅ SDR: Email reply from ${replyEmail} — enrollment ${emailEnrollment.id} → email_replied`);
+    }
+
+    // Store inbound email in CRM message thread
+    try {
+      await storage.createLeadMessage({
+        leadId: lead.id,
+        channel: "email",
+        content: subject ? `Subject: ${subject}\n\n${text || ""}` : (text || "(empty reply)"),
+        status: "delivered",
+        direction: "inbound",
+        aiGenerated: false,
+      });
+    } catch (err: any) {
+      console.warn("Email reply: failed to store lead message:", err.message);
     }
 
     // Log activity to CRM regardless of SDR state

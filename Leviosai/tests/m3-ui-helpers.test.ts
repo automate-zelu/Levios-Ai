@@ -53,6 +53,7 @@ describe("M3 component inventory", () => {
     "client/src/components/sdr/templateVars.js",
     "client/src/components/sdr/ThresholdSettings.jsx",
     "client/src/components/sdr/ExecutionLogTable.jsx",
+    "client/src/components/sdr/SdrFlowTimeline.jsx",
     "client/src/components/sdr/SDRAnalytics.jsx",
     "client/src/components/calling/CallLogTable.jsx",
     "client/src/components/calling/RecordingPlayer.jsx",
