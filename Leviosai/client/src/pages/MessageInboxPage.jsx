@@ -30,7 +30,15 @@ export default function MessageInboxPage({ channel }) {
       .then((data) => {
         const list = data.threads || [];
         setThreads(list);
-        if (!selectedLeadId && list.length > 0) {
+        let focusId = null;
+        try {
+          focusId = sessionStorage.getItem("inboxFocusLeadId");
+          if (focusId) sessionStorage.removeItem("inboxFocusLeadId");
+        } catch { /* ignore */ }
+        const focusNum = focusId ? Number(focusId) : null;
+        if (focusNum && list.some((t) => t.leadId === focusNum)) {
+          setSelectedLeadId(focusNum);
+        } else if (!selectedLeadId && list.length > 0) {
           setSelectedLeadId(list[0].leadId);
         }
       })

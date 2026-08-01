@@ -57,7 +57,8 @@ export class SDRStateMachine {
   async transition(
     enrollmentId: string,
     toStatus: EnrollmentStatus,
-    payload?: Record<string, unknown>
+    payload?: Record<string, unknown>,
+    opts?: { logStepName?: string; logOutcome?: string }
   ): Promise<void> {
     // Load current enrollment
     const [enrollment] = await db
@@ -97,8 +98,8 @@ export class SDRStateMachine {
       enrollmentId: enrollment.id,
       leadId:       enrollment.leadId,
       step:         enrollment.currentStep,
-      stepName:     toStatus,
-      outcome:      toStatus,
+      stepName:     opts?.logStepName ?? toStatus,
+      outcome:      opts?.logOutcome ?? toStatus,
       payload:      payload ?? {},
       loggedAt:     new Date(),
     });

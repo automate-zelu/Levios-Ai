@@ -11,7 +11,7 @@ import MessageInboxPage from "./pages/MessageInboxPage.jsx";
 import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
-import { ExecutionLogTable } from "./components/sdr/ExecutionLogTable.jsx";
+import { LeadSequencesPanel } from "./components/sdr/LeadSequencesPanel.jsx";
 // import CalendarConnections from "./components/calendar/CalendarConnections.jsx"; // paused — calendar UI out of scope
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
@@ -1553,7 +1553,7 @@ function EditLeadModal({ lead, onClose, onSaved }) {
 // ============================================================
 // LEADS — with Features 2, 3
 // ============================================================
-function LeadsPage() {
+function LeadsPage({ onNavigate }) {
   const [leads, setLeads] = useState([]);
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
@@ -1790,7 +1790,7 @@ function LeadsPage() {
       {/* Lead Detail Modal — with Features 2 & 3 */}
       {selectedLead && (
         <div style={S.modal} onClick={() => { setSelectedLead(null); setDetailTab("Details"); }}>
-          <div style={{ ...S.modalContent, maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...S.modalContent, maxWidth: 820 }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
               <div>
                 <h3 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{selectedLead.name}</h3>
@@ -1804,7 +1804,7 @@ function LeadsPage() {
             </div>
 
             <TabBar
-              tabs={["Details", "Conversation Replay", "Score Analysis", "SDR History"]}
+              tabs={["Details", "Conversation Replay", "Score Analysis", "Sequences"]}
               active={detailTab}
               onChange={setDetailTab}
             />
@@ -1852,8 +1852,11 @@ function LeadsPage() {
               </div>
             )}
 
+            {detailTab === "Sequences" && (
+              <LeadSequencesPanel lead={selectedLead} onNavigate={onNavigate} />
+            )}
             {detailTab === "SDR History" && (
-              <ExecutionLogTable leadId={selectedLead.id} />
+              <LeadSequencesPanel lead={selectedLead} onNavigate={onNavigate} />
             )}
           </div>
         </div>
@@ -4210,7 +4213,7 @@ export default function CatalystApp() {
     { name: "SDR Setup", icon: "🛠️", sub: "Twilio · Gmail" },
     { name: "SDR Agent", icon: "🤖", sub: "Prompt · Templates" },
     { name: "Voice AI", icon: "🎙️", sub: "ElevenLabs voice" },
-    { name: "AI Calling", icon: "📞", sub: "Logs · Sequences" },
+    { name: "AI Calling", icon: "📞", sub: "Bookings · Outcomes" },
     { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
     { name: "Email Inbox", icon: "✉️", sub: "Email threads" },
     { section: "Integrations" },
@@ -4223,7 +4226,7 @@ export default function CatalystApp() {
   const renderPage = () => {
     switch (page) {
       case "Dashboard": return <DashboardPage setPage={navigateTo} />;
-      case "Leads": return <LeadsPage />;
+      case "Leads": return <LeadsPage onNavigate={navigateTo} />;
       case "Campaigns": return <CampaignsPage />;
       case "Appointments": return <AppointmentsPage />;
       case "Conversation Replay": return <ConversationReplayPage />;

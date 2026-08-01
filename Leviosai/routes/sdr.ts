@@ -14,8 +14,6 @@ import {
   leads,
   leadMessages,
 } from "../lib/schema.js";
-import { stateMachine } from "../lib/sdr-state-machine.js";
-import { enqueueJob } from "../lib/sdr-queue.js";
 import { requireAuth } from "./auth.js";
 import { workspaceScope } from "../middleware/workspaceScope.js";
 import { enforceTierLimits } from "../middleware/tierEnforcement.js";
@@ -355,8 +353,8 @@ router.get("/api/sdr/leads/:leadId/logs", async (req: Request, res: Response) =>
       )
       .orderBy(sdrLogs.loggedAt);
 
-    // Also return the current enrollment if active
-    const [activeEnrollment] = await db
+    // All enrollment cycles for this lead (each try is its own sequence)
+    const enrollments = await db
       .select()
       .from(sdrEnrollments)
       .where(
@@ -365,8 +363,7 @@ router.get("/api/sdr/leads/:leadId/logs", async (req: Request, res: Response) =>
           eq(sdrEnrollments.leadId, leadId)
         )
       )
-      .orderBy(desc(sdrEnrollments.enrolledAt))
-      .limit(1);
+      .orderBy(desc(sdrEnrollments.enrolledAt));
 
     const [messages, callSessions] = await Promise.all([
       db
@@ -388,7 +385,8 @@ router.get("/api/sdr/leads/:leadId/logs", async (req: Request, res: Response) =>
 
     res.json({
       logs,
-      enrollment: activeEnrollment ?? null,
+      enrollment: enrollments[0] ?? null,
+      enrollments,
       messages,
       callSessions,
     });
@@ -540,40 +538,29 @@ router.post(
 
       let enrollment;
       let mode = decision.mode;
+      let jobId: string | null = null;
 
-      if (decision.mode === "reenroll" && decision.enrollmentId) {
-        await stateMachine.transition(decision.enrollmentId, "re_enrolled", {
+      if (decision.mode === "reenroll") {
+        // Close out prior cycle: leave exhausted row as historical archive,
+        // start a brand-new enrollment so logs/stats don't mix.
+        const { startFreshEnrollment } = await import("../lib/sdr-start-enrollment.js");
+        const started = await startFreshEnrollment({
+          workspaceId,
+          leadId,
+          priorEnrollmentId: decision.enrollmentId,
           reason: "manual_reenroll",
         });
-        const [updated] = await db
-          .update(sdrEnrollments)
-          .set({
-            nextEnrollAfter: null,
-            callAttempts: 0,
-            currentStep: 1,
-            updatedAt: new Date(),
-          })
-          .where(eq(sdrEnrollments.id, decision.enrollmentId))
-          .returning();
-        enrollment = updated;
+        enrollment = started.enrollment;
+        jobId = started.jobId;
       } else {
-        [enrollment] = await db
-          .insert(sdrEnrollments)
-          .values({
-            workspaceId,
-            leadId,
-            status: "pending",
-            currentStep: 1,
-          })
-          .returning();
-      }
-
-      const jobId = await enqueueJob("INITIATE_CALL", enrollment.id);
-      if (jobId) {
-        await db
-          .update(sdrEnrollments)
-          .set({ bullmqJobId: jobId })
-          .where(eq(sdrEnrollments.id, enrollment.id));
+        const { startFreshEnrollment } = await import("../lib/sdr-start-enrollment.js");
+        const started = await startFreshEnrollment({
+          workspaceId,
+          leadId,
+          reason: "manual_enroll",
+        });
+        enrollment = started.enrollment;
+        jobId = started.jobId;
       }
 
       await db

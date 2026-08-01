@@ -7,8 +7,6 @@
 
 import { db } from "./db.js";
 import { sdrConfigs, sdrEnrollments, workspaces, leads } from "./schema.js";
-import { enqueueJob } from "./sdr-queue.js";
-import { stateMachine } from "./sdr-state-machine.js";
 import {
   evaluateEnrollmentEligibility,
   wouldExceedLeadLimitAfter,
@@ -53,13 +51,6 @@ async function incrementLeadUsage(workspaceId: string) {
     .where(eq(workspaces.id, workspaceId));
 }
 
-async function attachJob(enrollmentId: string, jobId: string | null) {
-  if (!jobId) return;
-  await db
-    .update(sdrEnrollments)
-    .set({ bullmqJobId: jobId, updatedAt: new Date() })
-    .where(eq(sdrEnrollments.id, enrollmentId));
-}
 
 export async function scanDormantLeads(): Promise<ScanDormantResult> {
   let enrolled = 0;
@@ -158,51 +149,33 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
       }
 
       try {
-        if (decision.mode === "reenroll" && decision.enrollmentId) {
-          // exhausted → re_enrolled (same row), clear gate, enqueue call
-          await stateMachine.transition(decision.enrollmentId, "re_enrolled", {
+        const { startFreshEnrollment } = await import("./sdr-start-enrollment.js");
+        if (decision.mode === "reenroll") {
+          // New enrollment row — prior exhausted enrollment stays archived
+          const { enrollment } = await startFreshEnrollment({
+            workspaceId: config.workspaceId,
+            leadId: lead.id,
+            priorEnrollmentId: decision.enrollmentId,
             reason: "reactor_reenroll",
-            reEnrollDays: config.reEnrollDays,
           });
-          await db
-            .update(sdrEnrollments)
-            .set({
-              nextEnrollAfter: null,
-              callAttempts: 0,
-              currentStep: 1,
-              updatedAt: new Date(),
-            })
-            .where(eq(sdrEnrollments.id, decision.enrollmentId));
-
-          const jobId = await enqueueJob("INITIATE_CALL", decision.enrollmentId);
-          await attachJob(decision.enrollmentId, jobId);
           await incrementLeadUsage(config.workspaceId);
-
           enrolledThisWorkspace++;
           reenrolled++;
           enrolled++;
           console.log(
-            `SDR Scan: re-enrolled lead ${lead.id} (enrollment ${decision.enrollmentId}) in workspace ${config.workspaceId}`
+            `SDR Scan: re-enrolled lead ${lead.id} as new enrollment ${enrollment.id} in workspace ${config.workspaceId}`
           );
         } else {
-          const [enrollment] = await db
-            .insert(sdrEnrollments)
-            .values({
-              workspaceId: config.workspaceId,
-              leadId: lead.id,
-              status: "pending",
-              currentStep: 1,
-            })
-            .returning();
-
-          const jobId = await enqueueJob("INITIATE_CALL", enrollment.id);
-          await attachJob(enrollment.id, jobId);
+          const { enrollment } = await startFreshEnrollment({
+            workspaceId: config.workspaceId,
+            leadId: lead.id,
+            reason: "reactor_enroll",
+          });
           await incrementLeadUsage(config.workspaceId);
-
           enrolledThisWorkspace++;
           enrolled++;
           console.log(
-            `SDR Scan: enrolled lead ${lead.id} (${lead.firstName} ${lead.lastName}) in workspace ${config.workspaceId}`
+            `SDR Scan: enrolled lead ${lead.id} (${lead.firstName} ${lead.lastName}) as ${enrollment.id} in workspace ${config.workspaceId}`
           );
         }
       } catch (err: any) {

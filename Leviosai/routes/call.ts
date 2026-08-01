@@ -19,6 +19,8 @@ import {
   sdrConfigs,
   workspaces,
   leads,
+  sdrLogs,
+  leadMessages,
 } from "../lib/schema.js";
 import {
   stateMachine,
@@ -34,7 +36,7 @@ import { decrypt } from "../lib/crypto.js";
 import { requireAuth } from "./auth.js";
 import { workspaceScope } from "../middleware/workspaceScope.js";
 import { validateTwilioCallSession } from "../middleware/twilioSignature.js";
-import { eq, and, desc, count, sql } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { bookAppointmentWithCalendar } from "../lib/calendar/service.js";
 import { parseScheduledAt } from "../lib/calendar/booking-helpers.js";
@@ -468,24 +470,150 @@ router.get("/api/call/sessions", async (req: Request, res: Response) => {
 });
 
 // ─── GET /api/call/sessions/:id ───────────────────────────────────────────────
-// Single call session with transcript, recording URL, and AI summary.
+// Single call session with transcript, recording, and dial-scoped SDR flow.
 
 router.get("/api/call/sessions/:id", async (req: Request, res: Response) => {
   try {
     const workspaceId = req.workspace!.id;
+    const sessionId = req.params.id as string;
 
     const [session] = await db
       .select()
       .from(sdrCallSessions)
       .where(
         and(
-          eq(sdrCallSessions.id, req.params.id as string),
+          eq(sdrCallSessions.id, sessionId),
           eq(sdrCallSessions.workspaceId, workspaceId)
         )
       );
 
     if (!session) return res.status(404).json({ error: "Session not found" });
-    res.json(session);
+
+    let lead: {
+      id: number;
+      firstName: string | null;
+      lastName: string | null;
+      email: string | null;
+      phone: string | null;
+    } | null = null;
+
+    if (session.leadId) {
+      const [row] = await db
+        .select({
+          id: leads.id,
+          firstName: leads.firstName,
+          lastName: leads.lastName,
+          email: leads.email,
+          phone: leads.phone,
+        })
+        .from(leads)
+        .where(eq(leads.id, session.leadId))
+        .limit(1);
+      lead = row ?? null;
+    }
+
+    let logs: any[] = [];
+    let messages: any[] = [];
+    let enrollment: any = null;
+
+    if (session.enrollmentId) {
+      const [enr] = await db
+        .select()
+        .from(sdrEnrollments)
+        .where(eq(sdrEnrollments.id, session.enrollmentId));
+      enrollment = enr ?? null;
+
+      const allLogs = await db
+        .select()
+        .from(sdrLogs)
+        .where(eq(sdrLogs.enrollmentId, session.enrollmentId))
+        .orderBy(asc(sdrLogs.loggedAt));
+
+      const startIdx = allLogs.findIndex(
+        (l) =>
+          l.stepName === "call_initiated" &&
+          (l.payload as any)?.sessionId === session.id
+      );
+
+      let dialLogs = allLogs;
+      if (startIdx >= 0) {
+        let endIdx = allLogs.length;
+        for (let i = startIdx + 1; i < allLogs.length; i++) {
+          if (
+            allLogs[i].stepName === "call_initiated" ||
+            allLogs[i].stepName === "re_enrolled"
+          ) {
+            endIdx = i;
+            break;
+          }
+        }
+        dialLogs = allLogs.slice(startIdx, endIdx);
+      } else {
+        const t0 = session.startedAt ? new Date(session.startedAt).getTime() : 0;
+        const t1 = session.endedAt
+          ? new Date(session.endedAt).getTime() + 6 * 60 * 60 * 1000
+          : Date.now();
+        dialLogs = allLogs.filter((l) => {
+          if ((l.payload as any)?.sessionId === session.id) return true;
+          const t = new Date(l.loggedAt).getTime();
+          return (
+            t >= t0 &&
+            t <= t1 &&
+            !["re_enrolled", "stuck_recovery"].includes(l.stepName)
+          );
+        });
+      }
+      logs = dialLogs.filter((l) => l.stepName !== "stuck_recovery");
+
+      if (session.leadId) {
+        const startAt = dialLogs[0]?.loggedAt
+          ? new Date(dialLogs[0].loggedAt).getTime() - 5_000
+          : session.startedAt
+            ? new Date(session.startedAt).getTime() - 5_000
+            : 0;
+        const endAt = dialLogs[dialLogs.length - 1]?.loggedAt
+          ? new Date(dialLogs[dialLogs.length - 1].loggedAt).getTime() + 60_000
+          : session.endedAt
+            ? new Date(session.endedAt).getTime() + 6 * 60 * 60 * 1000
+            : Date.now();
+
+        const allMsgs = await db
+          .select()
+          .from(leadMessages)
+          .where(eq(leadMessages.leadId, session.leadId))
+          .orderBy(asc(leadMessages.createdAt));
+
+        messages = allMsgs.filter((m) => {
+          const t = new Date(m.createdAt).getTime();
+          return t >= startAt && t <= endAt;
+        });
+      }
+    }
+
+    const leadName = lead
+      ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+      : null;
+
+    res.json({
+      session: {
+        ...session,
+        leadName,
+        leadPhone: lead?.phone ?? null,
+        leadEmail: lead?.email ?? null,
+      },
+      lead,
+      enrollment: enrollment
+        ? {
+            id: enrollment.id,
+            status: enrollment.status,
+            callAttempts: enrollment.callAttempts,
+            enrolledAt: enrollment.enrolledAt,
+          }
+        : null,
+      logs,
+      messages,
+      callSessions: [session],
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

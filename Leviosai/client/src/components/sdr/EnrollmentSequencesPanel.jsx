@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { COLORS, S } from "../../theme.js";
 import { sdrApi } from "../../api.js";
-import { SdrFlowTimeline, STATUS_COLORS } from "./SdrFlowTimeline.jsx";
+import { SdrFlowTimeline, STATUS_COLORS, groupLogsByDial, sliceDialFlow } from "./SdrFlowTimeline.jsx";
 
 /**
  * Professional enrollments + sequence flow panel for AI Calling.
+ * Each dial attempt is shown separately — stuck recoveries are hidden.
  */
 export function EnrollmentSequencesPanel() {
   const [enrollments, setEnrollments] = useState([]);
@@ -14,6 +15,7 @@ export function EnrollmentSequencesPanel() {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [query, setQuery] = useState("");
+  const [dialIndex, setDialIndex] = useState(-1); // -1 = latest
 
   const load = () => {
     setLoading(true);
@@ -39,12 +41,49 @@ export function EnrollmentSequencesPanel() {
       return;
     }
     setDetailLoading(true);
+    setDialIndex(-1);
     sdrApi
       .getEnrollment(selectedId)
       .then(setDetail)
       .catch((e) => setError(e.message || "Failed to load sequence flow"))
       .finally(() => setDetailLoading(false));
   }, [selectedId]);
+
+  const dialGroups = useMemo(
+    () => groupLogsByDial(detail?.logs || [], detail?.callSessions || []),
+    [detail]
+  );
+
+  const activeDial = useMemo(() => {
+    if (!dialGroups.length) return null;
+    const idx = dialIndex < 0 ? dialGroups.length - 1 : Math.min(dialIndex, dialGroups.length - 1);
+    return dialGroups[idx];
+  }, [dialGroups, dialIndex]);
+
+  const dialView = useMemo(() => {
+    if (!activeDial) {
+      return {
+        logs: (detail?.logs || []).filter((l) => l.stepName !== "stuck_recovery"),
+        messages: detail?.messages || [],
+        callSessions: detail?.callSessions || [],
+      };
+    }
+    if (activeDial.session) {
+      return {
+        ...sliceDialFlow({
+          logs: detail?.logs || [],
+          messages: detail?.messages || [],
+          session: activeDial.session,
+        }),
+        callSessions: [activeDial.session],
+      };
+    }
+    return {
+      logs: activeDial.logs,
+      messages: detail?.messages || [],
+      callSessions: detail?.callSessions || [],
+    };
+  }, [activeDial, detail]);
 
   const filtered = enrollments.filter((e) => {
     const q = query.trim().toLowerCase();
@@ -165,7 +204,7 @@ export function EnrollmentSequencesPanel() {
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
                   <div>
                     <div style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
-                      Sequence flow
+                      Sequence
                     </div>
                     <div style={{ fontSize: 17, fontWeight: 700 }}>{selectedName || "Lead"}</div>
                     <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
@@ -178,11 +217,32 @@ export function EnrollmentSequencesPanel() {
                     <span style={S.badge(STATUS_COLORS[selected?.status || detail?.enrollment?.status] || COLORS.textMuted)}>
                       {selected?.status || detail?.enrollment?.status || "—"}
                     </span>
-                    <span style={{ fontSize: 11, color: COLORS.textDim, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-                      {(selectedId || "").slice(0, 8)}…
-                    </span>
                   </div>
                 </div>
+
+                {dialGroups.length > 1 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+                    {dialGroups.map((g, i) => {
+                      const active = (dialIndex < 0 ? dialGroups.length - 1 : dialIndex) === i;
+                      const when = g.startedAt ? new Date(g.startedAt).toLocaleString() : g.label;
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => setDialIndex(i)}
+                          style={{
+                            ...S.btn(active ? "primary" : "ghost"),
+                            padding: "6px 12px",
+                            fontSize: 12,
+                          }}
+                        >
+                          {g.label}
+                          <span style={{ opacity: 0.75, marginLeft: 6, fontWeight: 500 }}>{when}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
                 <div
                   style={{
@@ -192,22 +252,31 @@ export function EnrollmentSequencesPanel() {
                     marginTop: 16,
                   }}
                 >
-                  <Stat label="Call attempts" value={detail?.enrollment?.callAttempts ?? selected?.callAttempts ?? "—"} />
+                  <Stat
+                    label="This dial"
+                    value={
+                      activeDial?.session?.outcome
+                        ? String(activeDial.session.outcome).replace(/_/g, " ")
+                        : activeDial
+                          ? activeDial.label
+                          : "—"
+                    }
+                  />
+                  <Stat
+                    label="Duration"
+                    value={
+                      activeDial?.session?.durationSeconds != null
+                        ? `${activeDial.session.durationSeconds}s`
+                        : "—"
+                    }
+                  />
                   <Stat
                     label="SMS"
-                    value={detail?.enrollment?.smsSentAt || selected?.smsSentAt ? "Sent" : "—"}
+                    value={dialView.logs.some((l) => l.stepName === "sms_sent") ? "Sent" : "—"}
                   />
                   <Stat
                     label="Email"
-                    value={detail?.enrollment?.emailSentAt || selected?.emailSentAt ? "Sent" : "—"}
-                  />
-                  <Stat
-                    label="Enrolled"
-                    value={
-                      (detail?.enrollment?.enrolledAt || selected?.enrolledAt)
-                        ? new Date(detail?.enrollment?.enrolledAt || selected.enrolledAt).toLocaleDateString()
-                        : "—"
-                    }
+                    value={dialView.logs.some((l) => l.stepName === "email_sent") ? "Sent" : "—"}
                   />
                 </div>
               </div>
@@ -219,9 +288,10 @@ export function EnrollmentSequencesPanel() {
                   </div>
                 ) : (
                   <SdrFlowTimeline
-                    logs={detail?.logs || []}
-                    messages={detail?.messages || []}
-                    callSessions={detail?.callSessions || []}
+                    title={activeDial ? `${activeDial.label} flow` : "Dial flow"}
+                    logs={dialView.logs}
+                    messages={dialView.messages}
+                    callSessions={dialView.callSessions}
                   />
                 )}
               </div>
@@ -261,7 +331,7 @@ function Stat({ label, value }) {
       }}
     >
       <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.4 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 650, marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 13, fontWeight: 650, marginTop: 4, textTransform: "capitalize" }}>{value}</div>
     </div>
   );
 }

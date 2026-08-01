@@ -48,7 +48,9 @@ export function CallLogTable({ sessions, onSelect }) {
               </td>
               <td style={S.td}>
                 {s.outcome
-                  ? <span style={S.badge(OUTCOME_COLORS[s.outcome] || COLORS.textMuted)}>{s.outcome}</span>
+                  ? <span style={S.badge(OUTCOME_COLORS[s.outcome] || COLORS.textMuted)}>
+                      {String(s.outcome).replace(/_/g, " ")}
+                    </span>
                   : <span style={{ color: COLORS.textMuted, fontSize: 12 }}>—</span>}
               </td>
               <td style={S.td}>

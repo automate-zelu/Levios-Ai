@@ -194,14 +194,20 @@ export async function handleSdrSmsConversation(opts: {
       from: opts.fromPhone,
     });
   } else if (status === "email_sent" && stateMachine.canTransition("email_sent", "email_replied")) {
-    await stateMachine.transition(opts.enrollmentId, "email_replied", {
-      channel: "sms",
-      direction: "inbound",
-      replyText: opts.inboundText.substring(0, 500),
-      intent,
-      from: opts.fromPhone,
-      via: "sms_after_email",
-    });
+    // Status advances on the email step, but the reply arrived by SMS — log it as SMS.
+    await stateMachine.transition(
+      opts.enrollmentId,
+      "email_replied",
+      {
+        channel: "sms",
+        direction: "inbound",
+        replyText: opts.inboundText.substring(0, 500),
+        intent,
+        from: opts.fromPhone,
+        via: "sms_after_email",
+      },
+      { logStepName: "sms_replied", logOutcome: "sms_replied" }
+    );
   } else {
     await db.insert(sdrLogs).values({
       workspaceId: opts.workspaceId,
