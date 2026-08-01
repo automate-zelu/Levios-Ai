@@ -7,6 +7,7 @@ import { INTEGRATION_CATEGORIES, integrationsService, MOCK_BILLING } from "./ser
 import SDRConfigPage from "./pages/SDRConfigPage.jsx";
 import CallingPanelPage from "./pages/CallingPanelPage.jsx";
 import SDRSetupPage from "./pages/SDRSetupPage.jsx";
+import MessageInboxPage from "./pages/MessageInboxPage.jsx";
 import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
@@ -4042,6 +4043,8 @@ const PAGE_TO_PATH = {
   "SDR Agent": "/sdr",
   "AI Calling": "/calling",
   "Voice AI": "/voice-ai",
+  "SMS Inbox": "/sdr-sms",
+  "Email Inbox": "/sdr-email",
   "SDR Setup": "/sdr-setup",
   "Connect Your Tech": "/integrations",
   "Billing": "/billing",
@@ -4208,6 +4211,8 @@ export default function CatalystApp() {
     { name: "SDR Agent", icon: "🤖", sub: "Prompt · Sequence" },
     { name: "Voice AI", icon: "🎙️", sub: "ElevenLabs voice" },
     { name: "AI Calling", icon: "📞", sub: "Logs · Recordings" },
+    { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
+    { name: "Email Inbox", icon: "✉️", sub: "Email threads" },
     { section: "Integrations" },
     { name: "Connect Your Tech", icon: "🔌" },
     { section: "Account" },
@@ -4231,6 +4236,8 @@ export default function CatalystApp() {
       case "SDR Agent": return <SDRConfigPage onNavigateBilling={() => navigateTo("Billing")} />;
       case "AI Calling": return <CallingPanelPage />;
       case "SDR Setup": return <SDRSetupPage />;
+      case "SMS Inbox": return <MessageInboxPage channel="sms" />;
+      case "Email Inbox": return <MessageInboxPage channel="email" />;
       default: return <DashboardPage setPage={navigateTo} />;
     }
   };

@@ -250,6 +250,9 @@ function HowSdrWorksModal({ open, onClose, onNavigate }) {
               <strong style={{ color: COLORS.text }}>AI Calling</strong> — call log, recordings, transcripts
             </li>
             <li>
+              <strong style={{ color: COLORS.text }}>SMS Inbox / Email Inbox</strong> — full text & email conversation threads with leads
+            </li>
+            <li>
               <strong style={{ color: COLORS.text }}>Billing</strong> — subscription required before SDR can go live
             </li>
           </ul>

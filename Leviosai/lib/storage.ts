@@ -240,6 +240,79 @@ export const storage = {
     return query;
   },
 
+  /**
+   * Inbox threads for SMS or email — one row per lead with last message preview.
+   */
+  async getMessageThreads(
+    organizationId: number,
+    channel: "sms" | "email",
+    limit = 50
+  ) {
+    const rows = await db
+      .select({
+        id: leadMessages.id,
+        leadId: leadMessages.leadId,
+        channel: leadMessages.channel,
+        content: leadMessages.content,
+        status: leadMessages.status,
+        direction: leadMessages.direction,
+        aiGenerated: leadMessages.aiGenerated,
+        createdAt: leadMessages.createdAt,
+        leadFirstName: leads.firstName,
+        leadLastName: leads.lastName,
+        leadEmail: leads.email,
+        leadPhone: leads.phone,
+      })
+      .from(leadMessages)
+      .innerJoin(leads, eq(leadMessages.leadId, leads.id))
+      .where(
+        and(
+          eq(leads.organizationId, organizationId),
+          eq(leadMessages.channel, channel)
+        )
+      )
+      .orderBy(desc(leadMessages.createdAt))
+      .limit(Math.min(2000, Math.max(limit * 20, 200)));
+
+    const byLead = new Map<
+      number,
+      {
+        leadId: number;
+        leadFirstName: string | null;
+        leadLastName: string | null;
+        leadEmail: string | null;
+        leadPhone: string | null;
+        lastMessage: (typeof rows)[0];
+        messageCount: number;
+      }
+    >();
+
+    for (const row of rows) {
+      const existing = byLead.get(row.leadId);
+      if (!existing) {
+        byLead.set(row.leadId, {
+          leadId: row.leadId,
+          leadFirstName: row.leadFirstName,
+          leadLastName: row.leadLastName,
+          leadEmail: row.leadEmail,
+          leadPhone: row.leadPhone,
+          lastMessage: row,
+          messageCount: 1,
+        });
+      } else {
+        existing.messageCount += 1;
+      }
+    }
+
+    return Array.from(byLead.values())
+      .sort(
+        (a, b) =>
+          new Date(b.lastMessage.createdAt).getTime() -
+          new Date(a.lastMessage.createdAt).getTime()
+      )
+      .slice(0, limit);
+  },
+
   // ─── APPOINTMENTS (scoped through leads) ──────────────────────────────
 
   async getAppointments(filters?: { status?: string; leadId?: number; organizationId?: number | null }) {

@@ -102,6 +102,8 @@ export const proposalsApi = {
 // Messages
 export const messagesApi = {
   recent: (limit = 20) => request(`/api/messages/recent?limit=${limit}`),
+  threads: (channel, limit = 50) =>
+    request(`/api/messages/threads?channel=${encodeURIComponent(channel)}&limit=${limit}`),
 };
 
 // Activity
