@@ -356,7 +356,7 @@ function TimelineStep({ log, session, onStepClick }) {
               fontSize: 12,
             }}
           >
-            {isSmsStep ? "View SMS conversation" : "View email thread"} →
+            {isSmsStep ? "Open SMS Inbox" : "Open Email Inbox"} →
           </button>
         )}
         {session && <CallSessionCard session={session} />}

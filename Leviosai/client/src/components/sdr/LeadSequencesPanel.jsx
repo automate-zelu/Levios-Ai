@@ -7,11 +7,10 @@ import {
   groupLogsByDial,
   sliceDialFlow,
 } from "./SdrFlowTimeline.jsx";
-import { ConversationThreadModal } from "./ConversationThreadModal.jsx";
 
 /**
- * Lead detail → Sequences: every enrollment try + dial attempts,
- * with SMS/email conversation modals and inbox deep-links.
+ * Lead detail → Sequences: every enrollment try + dial attempts.
+ * SMS/email steps navigate to the full inbox pages (no modal).
  */
 export function LeadSequencesPanel({ lead, onNavigate }) {
   const leadId = lead?.id;
@@ -25,7 +24,6 @@ export function LeadSequencesPanel({ lead, onNavigate }) {
   const [error, setError] = useState("");
   const [tryIndex, setTryIndex] = useState(0);
   const [dialIndex, setDialIndex] = useState(-1);
-  const [threadModal, setThreadModal] = useState(null); // { channel }
 
   const load = () => {
     if (!leadId) return;
@@ -110,11 +108,8 @@ export function LeadSequencesPanel({ lead, onNavigate }) {
     try {
       sessionStorage.setItem("inboxFocusLeadId", String(leadId));
     } catch { /* ignore */ }
-    setThreadModal(null);
     onNavigate?.(channel === "sms" ? "SMS Inbox" : "Email Inbox");
   };
-
-  const leadName = lead?.name || [lead?.firstName, lead?.lastName].filter(Boolean).join(" ") || "Lead";
 
   if (loading) {
     return <div style={{ padding: 20, textAlign: "center", color: COLORS.textMuted }}>Loading sequences…</div>;
@@ -230,19 +225,7 @@ export function LeadSequencesPanel({ lead, onNavigate }) {
           messages={[]}
           hideMessages
           callSessions={dialView.callSessions}
-          onStepClick={(channel) => setThreadModal({ channel })}
-        />
-      )}
-
-      {threadModal && (
-        <ConversationThreadModal
-          channel={threadModal.channel}
-          leadName={leadName}
-          leadPhone={lead?.phone}
-          leadEmail={lead?.email}
-          messages={messages}
-          onClose={() => setThreadModal(null)}
-          onOpenInbox={openInbox}
+          onStepClick={openInbox}
         />
       )}
     </div>

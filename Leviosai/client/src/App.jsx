@@ -11,7 +11,7 @@ import MessageInboxPage from "./pages/MessageInboxPage.jsx";
 import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
-import { LeadSequencesPanel } from "./components/sdr/LeadSequencesPanel.jsx";
+import LeadDetailPage from "./pages/LeadDetailPage.jsx";
 // import CalendarConnections from "./components/calendar/CalendarConnections.jsx"; // paused — calendar UI out of scope
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
@@ -149,7 +149,8 @@ const TIER_THRESHOLDS = {
 // ============================================================
 const S = {
   app: { display: "flex", height: "100vh", background: COLORS.bg, color: COLORS.text, fontFamily: "'DM Sans', 'Outfit', system-ui, sans-serif", overflow: "hidden" },
-  sidebar: { width: 260, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" },
+  /* width controlled by .catalyst-sidebar CSS so collapse animates smoothly */
+  sidebar: { background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" },
   sidebarNav: { flex: 1, overflowY: "auto", padding: "8px 0" },
   navItem: (active) => ({
     display: "flex", alignItems: "center", gap: 12, padding: "11px 20px", cursor: "pointer", fontSize: 13.5,
@@ -210,7 +211,7 @@ function Logo({ size = "default" }) {
         <polygon points="50,5 61,35 95,35 68,55 78,88 50,68 22,88 32,55 5,35 39,35" fill="url(#sg)" />
         <polygon points="50,22 56,38 73,38 60,48 64,65 50,55 36,65 40,48 27,38 44,38" fill="#f39c12" opacity="0.6" />
       </svg>
-      <span style={{ fontSize: 24 * s, fontWeight: 700, background: "linear-gradient(135deg, #f39c12, #e67e22, #d35400)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: -0.5 }}>catalyst</span>
+      <span className="logo-wordmark" style={{ fontSize: 24 * s, fontWeight: 700, background: "linear-gradient(135deg, #f39c12, #e67e22, #d35400)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: -0.5 }}>catalyst</span>
     </div>
   );
 }
@@ -1554,6 +1555,7 @@ function EditLeadModal({ lead, onClose, onSaved }) {
 // LEADS — with Features 2, 3
 // ============================================================
 function LeadsPage({ onNavigate }) {
+  const navigate = useNavigate();
   const [leads, setLeads] = useState([]);
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
@@ -1562,12 +1564,15 @@ function LeadsPage({ onNavigate }) {
   const [addLeadForm, setAddLeadForm] = useState({ firstName: "", lastName: "", email: "", phone: "", source: "" });
   const [addLeadError, setAddLeadError] = useState(null);
   const [addLeadSaving, setAddLeadSaving] = useState(false);
-  const [selectedLead, setSelectedLead] = useState(null);
-  const [detailTab, setDetailTab] = useState("Details");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   // action: { kind: 'sms'|'email'|'call'|'score'|'edit', lead }
   const [action, setAction] = useState(null);
+
+  const openLead = (lead, tab) => {
+    const path = tab ? `/leads/${lead.id}?tab=${encodeURIComponent(tab)}` : `/leads/${lead.id}`;
+    navigate(path);
+  };
 
   const statusMap = { "New": "new", "Dead": "lost", "Aged": "contacted", "Revived": "qualified", "Appointment Set": "proposal" };
   const statusLabelMap = { "new": "New", "lost": "Dead", "contacted": "Aged", "qualified": "Revived", "proposal": "Appointment Set", "won": "Revived" };
@@ -1644,7 +1649,7 @@ function LeadsPage({ onNavigate }) {
           </tr></thead>
           <tbody>
             {filtered.map((l) => (
-              <tr key={l.id} style={{ cursor: "pointer" }} onClick={() => setSelectedLead(l)}>
+              <tr key={l.id} style={{ cursor: "pointer" }} onClick={() => openLead(l)}>
                 <td style={S.td}><span style={{ fontWeight: 600 }}>{l.name}</span></td>
                 <td style={S.td}><div style={{ fontSize: 12 }}>{l.phone}</div><div style={{ fontSize: 11, color: COLORS.textMuted }}>{l.email}</div></td>
                 <td style={S.td} className="hide-mobile"><span style={S.tag(COLORS.textMuted)}>{l.source}</span></td>
@@ -1667,7 +1672,7 @@ function LeadsPage({ onNavigate }) {
                 {/* FEATURE 2: Conversation count */}
                 <td style={S.td} className="hide-mobile">
                   <span style={{ ...S.tag(l.conversations.length > 0 ? COLORS.blue : COLORS.textDim), cursor: "pointer" }}
-                    onClick={(e) => { e.stopPropagation(); setSelectedLead(l); setDetailTab("Conversation Replay"); }}>
+                    onClick={(e) => { e.stopPropagation(); openLead(l, "messages"); }}>
                     💬 {l.conversations.length}
                   </span>
                 </td>
@@ -1787,81 +1792,6 @@ function LeadsPage({ onNavigate }) {
         </div>
       )}
 
-      {/* Lead Detail Modal — with Features 2 & 3 */}
-      {selectedLead && (
-        <div style={S.modal} onClick={() => { setSelectedLead(null); setDetailTab("Details"); }}>
-          <div style={{ ...S.modalContent, maxWidth: 820 }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-              <div>
-                <h3 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{selectedLead.name}</h3>
-                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                  <span style={S.badge(statusColors[selectedLead.status])}>{selectedLead.status}</span>
-                  <span style={S.tag(COLORS.textMuted)}>{selectedLead.source}</span>
-                  <span style={S.tag(COLORS.blue)}>💬 {selectedLead.conversations.length} conversations</span>
-                </div>
-              </div>
-              <button style={{ ...S.btn("ghost"), padding: "6px 10px" }} onClick={() => { setSelectedLead(null); setDetailTab("Details"); }}>✕</button>
-            </div>
-
-            <TabBar
-              tabs={["Details", "Conversation Replay", "Score Analysis", "Sequences"]}
-              active={detailTab}
-              onChange={setDetailTab}
-            />
-
-            {detailTab === "Details" && (
-              <>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-                  <div><div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>Phone</div><div style={{ fontSize: 14 }}>{selectedLead.phone}</div></div>
-                  <div><div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>Email</div><div style={{ fontSize: 14 }}>{selectedLead.email}</div></div>
-                  <div><div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>Industry</div><div style={{ fontSize: 14 }}>{selectedLead.industry}</div></div>
-                  <div><div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>Lead Score</div><div style={{ fontSize: 14, fontWeight: 700, color: selectedLead.score > 75 ? COLORS.green : COLORS.orange }}>{selectedLead.score}/100 {selectedLead.marketBoost > 0 && <span style={{ fontSize: 11, color: COLORS.green }}>⚡+{selectedLead.marketBoost} boost</span>}</div></div>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 4 }}>AI Notes</div>
-                  <div style={{ padding: 14, borderRadius: 8, background: COLORS.surfaceAlt, fontSize: 13, lineHeight: 1.6 }}>{selectedLead.notes}</div>
-                </div>
-                <div style={{ padding: 14, borderRadius: 8, background: COLORS.orangeGlow, border: `1px solid ${COLORS.orange}33`, marginBottom: 20 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.orangeLight, marginBottom: 6 }}>🤖 AI Recommended Action</div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                    {selectedLead.score > 75
-                      ? "High intent detected. Recommend immediate voice AI outreach with appointment offer. Offer 2 appointment times within the next 48 hours."
-                      : selectedLead.score > 50
-                      ? `Moderate interest. Score has decayed ${Math.abs(selectedLead.baseScore - selectedLead.score)} points since initial contact. Recommend multi-touch sequence: personalized SMS → email with value prop → voice follow-up in 3 days.`
-                      : `Low engagement. Score decaying at ${selectedLead.decayRate}/mo. ${selectedLead.marketBoost > 0 ? "Market conditions have boosted score — window of opportunity is NOW." : "Start with soft-touch email re-engagement highlighting new incentives."}`}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={S.btn("primary")} onClick={() => setAction({ kind: "call", lead: selectedLead })}>📞 Voice AI Call</button>
-                  <button style={S.btn("secondary")} onClick={() => setAction({ kind: "sms", lead: selectedLead })}>💬 Send SMS</button>
-                  <button style={S.btn("secondary")} onClick={() => setAction({ kind: "email", lead: selectedLead })}>✉️ Send Email</button>
-                  <button style={S.btn("teal")} onClick={() => setAction({ kind: "score", lead: selectedLead })}>🧠 AI Score</button>
-                  <button style={S.btn("ghost")} onClick={() => setAction({ kind: "edit", lead: selectedLead })}>✏️ Edit Lead</button>
-                  <button style={S.btn("success")}>📅 Set Appointment</button>
-                </div>
-              </>
-            )}
-
-            {detailTab === "Conversation Replay" && (
-              <ConversationReplay conversations={selectedLead.conversations} leadName={selectedLead.name} />
-            )}
-
-            {detailTab === "Score Analysis" && (
-              <div style={{ paddingTop: 16 }}>
-                <LeadScoreDecayPanel lead={selectedLead} />
-              </div>
-            )}
-
-            {detailTab === "Sequences" && (
-              <LeadSequencesPanel lead={selectedLead} onNavigate={onNavigate} />
-            )}
-            {detailTab === "SDR History" && (
-              <LeadSequencesPanel lead={selectedLead} onNavigate={onNavigate} />
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Branded lead-action modals */}
       {action?.kind === "sms" && (
         <SendMessageModal lead={action.lead} channel="sms"
@@ -1885,7 +1815,7 @@ function LeadsPage({ onNavigate }) {
       {action?.kind === "edit" && (
         <EditLeadModal lead={action.lead}
           onClose={() => setAction(null)}
-          onSaved={() => { fetchLeads(); setSelectedLead(null); }} />
+          onSaved={() => { fetchLeads(); }} />
       )}
     </div>
   );
@@ -4062,6 +3992,7 @@ export default function CatalystApp() {
   const [loggedIn, setLoggedIn] = useState(isAuthenticated());
   const [user, setUser] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => !!localStorage.getItem(ONBOARDING_FLAG_KEY)
   );
@@ -4077,7 +4008,14 @@ export default function CatalystApp() {
     return null;
   });
 
-  const page = PATH_TO_PAGE[location.pathname] ?? "Dashboard";
+  const leadDetailMatch = location.pathname.match(/^\/leads\/([^/]+)$/);
+  const isLeadDetail = !!leadDetailMatch;
+  const page = isLeadDetail ? "Leads" : (PATH_TO_PAGE[location.pathname] ?? "Dashboard");
+
+  // Collapse main CRM rail when opening a lead; restore when leaving
+  useEffect(() => {
+    setSidebarCollapsed(isLeadDetail);
+  }, [isLeadDetail]);
 
   useEffect(() => {
     if (isAuthenticated() && !user) {
@@ -4224,6 +4162,9 @@ export default function CatalystApp() {
   ];
 
   const renderPage = () => {
+    if (isLeadDetail) {
+      return <LeadDetailPage onNavigate={navigateTo} />;
+    }
     switch (page) {
       case "Dashboard": return <DashboardPage setPage={navigateTo} />;
       case "Leads": return <LeadsPage onNavigate={navigateTo} />;
@@ -4253,44 +4194,75 @@ export default function CatalystApp() {
       {/* Mobile sidebar overlay */}
       <div className={`sidebar-overlay ${sidebarOpen ? "active" : ""}`} onClick={() => setSidebarOpen(false)} />
 
-      <div className={`catalyst-sidebar ${sidebarOpen ? "open" : ""}`} style={S.sidebar}>
-        <div style={{ padding: "20px 20px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <Logo /><div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 6, letterSpacing: 0.5 }}>THE REACTION STACK</div>
+      <div
+        className={`catalyst-sidebar ${sidebarOpen ? "open" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}
+        style={S.sidebar}
+      >
+        <div style={{ padding: sidebarCollapsed ? "16px 12px" : "20px 20px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ minWidth: 0, overflow: "hidden" }}>
+            <Logo />
+            <div className="logo-tagline" style={{ fontSize: 10, color: COLORS.textDim, marginTop: 6, letterSpacing: 0.5 }}>THE REACTION STACK</div>
           </div>
-          <button className="mobile-menu-btn sidebar-close-btn" onClick={() => setSidebarOpen(false)} style={{ color: COLORS.textMuted }}>✕</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <button
+              type="button"
+              className="sidebar-collapse-btn hide-mobile"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? "»" : "«"}
+            </button>
+            <button className="mobile-menu-btn sidebar-close-btn" onClick={() => setSidebarOpen(false)} style={{ color: COLORS.textMuted }}>✕</button>
+          </div>
         </div>
         <div style={S.sidebarNav}>
           {navItems.map((item, i) => {
-            if (item.section) return <div key={i} style={S.navSection}>{item.section}</div>;
+            if (item.section) return <div key={i} className="nav-section nav-section-label" style={S.navSection}>{item.section}</div>;
             return (
-              <div key={i} style={S.navItem(page === item.name)} onClick={() => navigateTo(item.name)}>
-                <span>{item.icon}</span><span style={{ flex: 1 }}>{item.name}</span>
-                {item.badge && <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: COLORS.purple, color: "#fff", fontWeight: 700 }}>{item.badge}</span>}
-                {item.sub && <span style={{ fontSize: 10, color: COLORS.textDim }}>{item.sub}</span>}
+              <div
+                key={i}
+                className="nav-item-row"
+                style={S.navItem(page === item.name)}
+                onClick={() => navigateTo(item.name)}
+                title={item.name}
+              >
+                <span>{item.icon}</span>
+                <span className="nav-label" style={{ flex: 1 }}>{item.name}</span>
+                {item.badge && <span className="nav-badge" style={{ fontSize: 9, padding: "2px 6px", borderRadius: 4, background: COLORS.purple, color: "#fff", fontWeight: 700 }}>{item.badge}</span>}
+                {item.sub && <span className="nav-sub" style={{ fontSize: 10, color: COLORS.textDim }}>{item.sub}</span>}
               </div>
             );
           })}
         </div>
-        <div className="sidebar-user" style={{ padding: "16px 20px", borderTop: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="sidebar-user" style={{ padding: sidebarCollapsed ? "12px 10px" : "16px 20px", borderTop: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 10, justifyContent: sidebarCollapsed ? "center" : "flex-start" }}>
           <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#fff", flexShrink: 0 }}>{(user?.firstName || "U")[0]}</div>
           <div className="sidebar-user-info" style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600 }}>{user ? `${user.firstName} ${user.lastName}` : "User"}</div><div style={{ fontSize: 10, color: COLORS.textMuted }}>{user?.email || "Growth Plan"}</div></div>
-          <button style={{ background: "none", border: "none", color: COLORS.textMuted, cursor: "pointer", fontSize: 16, flexShrink: 0 }} onClick={handleLogout} title="Sign out">⏻</button>
+          {!sidebarCollapsed && (
+            <button style={{ background: "none", border: "none", color: COLORS.textMuted, cursor: "pointer", fontSize: 16, flexShrink: 0 }} onClick={handleLogout} title="Sign out">⏻</button>
+          )}
         </div>
       </div>
       <div className="catalyst-main" style={S.main}>
-        <div className="catalyst-topbar" style={S.topbar}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button className="mobile-menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
-            <span style={{ fontSize: 17, fontWeight: 700 }}>{page}</span>
+        {!isLeadDetail && (
+          <div className="catalyst-topbar" style={S.topbar}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button className="mobile-menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
+              <span style={{ fontSize: 17, fontWeight: 700 }}>{page}</span>
+            </div>
+            <div className="topbar-right">
+              <span className="compliance-badge-topbar"><ComplianceBadge /></span>
+              <div style={{ position: "relative" }}><span style={{ cursor: "pointer", fontSize: 18 }}>🔔</span><span style={{ position: "absolute", top: -4, right: -4, width: 14, height: 14, borderRadius: 7, background: COLORS.red, fontSize: 9, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>5</span></div>
+              <input className="topbar-search" style={{ ...S.input, maxWidth: 200, padding: "8px 14px" }} placeholder="Search..." />
+            </div>
           </div>
-          <div className="topbar-right">
-            <span className="compliance-badge-topbar"><ComplianceBadge /></span>
-            <div style={{ position: "relative" }}><span style={{ cursor: "pointer", fontSize: 18 }}>🔔</span><span style={{ position: "absolute", top: -4, right: -4, width: 14, height: 14, borderRadius: 7, background: COLORS.red, fontSize: 9, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>5</span></div>
-            <input className="topbar-search" style={{ ...S.input, maxWidth: 200, padding: "8px 14px" }} placeholder="Search..." />
-          </div>
+        )}
+        <div
+          className={`catalyst-content ${isLeadDetail ? "is-lead-detail" : ""}`}
+          style={isLeadDetail ? { ...S.content, padding: 0, overflow: "hidden" } : S.content}
+        >
+          {renderPage()}
         </div>
-        <div className="catalyst-content" style={S.content}>{renderPage()}</div>
       </div>
     </div>
     </SettingsProvider>
