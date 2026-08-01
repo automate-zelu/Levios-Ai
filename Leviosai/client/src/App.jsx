@@ -1569,9 +1569,8 @@ function LeadsPage({ onNavigate }) {
   // action: { kind: 'sms'|'email'|'call'|'score'|'edit', lead }
   const [action, setAction] = useState(null);
 
-  const openLead = (lead, tab) => {
-    const path = tab ? `/leads/${lead.id}?tab=${encodeURIComponent(tab)}` : `/leads/${lead.id}`;
-    navigate(path);
+  const openLead = (lead) => {
+    navigate(`/leads/${lead.id}`);
   };
 
   const statusMap = { "New": "new", "Dead": "lost", "Aged": "contacted", "Revived": "qualified", "Appointment Set": "proposal" };
@@ -1672,7 +1671,7 @@ function LeadsPage({ onNavigate }) {
                 {/* FEATURE 2: Conversation count */}
                 <td style={S.td} className="hide-mobile">
                   <span style={{ ...S.tag(l.conversations.length > 0 ? COLORS.blue : COLORS.textDim), cursor: "pointer" }}
-                    onClick={(e) => { e.stopPropagation(); openLead(l, "messages"); }}>
+                    onClick={(e) => { e.stopPropagation(); openLead(l); }}>
                     💬 {l.conversations.length}
                   </span>
                 </td>

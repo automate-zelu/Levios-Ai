@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
 import { leadsApi, messagingApi } from "../api.js";
@@ -8,8 +8,6 @@ import { parseEmailContent } from "../lib/emailMessage.js";
 const NAV = [
   { id: "overview", label: "Overview", icon: "👤" },
   { id: "sequences", label: "Sequences", icon: "🔁" },
-  { id: "messages", label: "Messages", icon: "💬" },
-  { id: "score", label: "Score", icon: "📈" },
 ];
 
 const STATUS_LABEL = {
@@ -45,12 +43,21 @@ export default function LeadDetailPage({ onNavigate }) {
   const [error, setError] = useState("");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [busy, setBusy] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
 
-  const tab = searchParams.get("tab") || "overview";
+  const rawTab = searchParams.get("tab") || "overview";
+  const tab = rawTab === "sequences" ? "sequences" : "overview";
 
   const setTab = (id) => {
     setSearchParams(id === "overview" ? {} : { tab: id }, { replace: true });
   };
+
+  // Legacy ?tab=messages|score → overview
+  useEffect(() => {
+    if (rawTab === "messages" || rawTab === "score") {
+      setSearchParams({}, { replace: true });
+    }
+  }, [rawTab, setSearchParams]);
 
   const load = () => {
     const id = Number(leadId);
@@ -78,6 +85,14 @@ export default function LeadDetailPage({ onNavigate }) {
   useEffect(() => {
     load();
   }, [leadId]);
+
+  const sortedMessages = useMemo(
+    () =>
+      [...(messages || [])].sort(
+        (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+      ),
+    [messages]
+  );
 
   const smsCount = useMemo(() => messages.filter((m) => m.channel === "sms").length, [messages]);
   const emailCount = useMemo(() => messages.filter((m) => m.channel === "email").length, [messages]);
@@ -121,8 +136,17 @@ export default function LeadDetailPage({ onNavigate }) {
 
   return (
     <div className="lead-detail-shell">
-      {/* Lead-local sidebar */}
       <aside className={`lead-rail ${railCollapsed ? "is-collapsed" : ""}`}>
+        <button
+          type="button"
+          className="lead-rail-edge-toggle"
+          onClick={() => setRailCollapsed((v) => !v)}
+          title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={railCollapsed ? "Expand lead sidebar" : "Collapse lead sidebar"}
+        >
+          {railCollapsed ? "›" : "‹"}
+        </button>
+
         <div className="lead-rail-head">
           <button
             type="button"
@@ -136,15 +160,6 @@ export default function LeadDetailPage({ onNavigate }) {
             <div className="lead-rail-kicker">Lead</div>
             <div className="lead-rail-name">{lead.name}</div>
           </div>
-          <button
-            type="button"
-            className="lead-rail-toggle"
-            onClick={() => setRailCollapsed((v) => !v)}
-            title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={railCollapsed ? "Expand lead sidebar" : "Collapse lead sidebar"}
-          >
-            {railCollapsed ? "»" : "«"}
-          </button>
         </div>
 
         <nav className="lead-rail-nav">
@@ -174,7 +189,6 @@ export default function LeadDetailPage({ onNavigate }) {
         </div>
       </aside>
 
-      {/* Main panel */}
       <div className="lead-detail-main">
         <header className="lead-detail-top">
           <div>
@@ -203,61 +217,276 @@ export default function LeadDetailPage({ onNavigate }) {
 
         <div className="lead-detail-body">
           {tab === "overview" && (
-            <div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
-                <InfoCard label="Phone" value={lead.phone || "—"} />
-                <InfoCard label="Email" value={lead.email || "—"} />
-                <InfoCard label="Source" value={lead.source || "—"} />
-                <InfoCard label="Score" value={`${lead.score}/100`} accent={lead.score > 75 ? COLORS.green : COLORS.orange} />
-                <InfoCard label="SMS messages" value={String(smsCount)} />
-                <InfoCard label="Emails" value={String(emailCount)} />
-              </div>
-              {lead.notes && (
-                <div style={S.card}>
-                  <div style={S.cardHeader}>Notes</div>
-                  <div style={{ fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted }}>{lead.notes}</div>
-                </div>
-              )}
-              <div style={{ ...S.card, marginBottom: 0 }}>
-                <div style={S.cardHeader}>Quick actions</div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button type="button" style={S.btn("ghost")} onClick={() => setTab("sequences")}>Open sequences →</button>
-                  <button type="button" style={S.btn("ghost")} onClick={() => setTab("messages")}>View messages →</button>
-                  <button type="button" style={S.btn("ghost")} onClick={() => setTab("score")}>Score analysis →</button>
-                </div>
-              </div>
-            </div>
+            <OverviewPanel
+              lead={lead}
+              messages={sortedMessages}
+              smsCount={smsCount}
+              emailCount={emailCount}
+              onOpenChat={() => setChatOpen(true)}
+              onOpenSequences={() => setTab("sequences")}
+            />
           )}
 
           {tab === "sequences" && (
             <LeadSequencesPanel lead={lead} onNavigate={onNavigate} />
           )}
+        </div>
+      </div>
 
-          {tab === "messages" && (
-            <MessagesTab
-              messages={messages}
-              onOpenSms={() => openInbox("sms")}
-              onOpenEmail={() => openInbox("email")}
-            />
-          )}
+      {chatOpen && (
+        <ConversationModal
+          leadName={lead.name}
+          messages={sortedMessages}
+          onClose={() => setChatOpen(false)}
+          onOpenInbox={openInbox}
+        />
+      )}
+    </div>
+  );
+}
 
-          {tab === "score" && (
-            <div style={S.card}>
-              <div style={S.cardHeader}>Lead score</div>
-              <div style={{ fontSize: 42, fontWeight: 800, color: lead.score > 75 ? COLORS.green : lead.score > 50 ? COLORS.yellow : COLORS.red }}>
-                {lead.score}
-                <span style={{ fontSize: 16, color: COLORS.textMuted, fontWeight: 500 }}> / 100</span>
-              </div>
-              <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.55, marginTop: 12, maxWidth: 520 }}>
-                {lead.score > 75
-                  ? "High intent. Prioritize a live call and booking offer within 48 hours."
-                  : lead.score > 50
-                    ? "Moderate interest. Keep the multi-touch sequence moving — SMS, email, then voice."
-                    : "Low engagement. Soft re-entry via value-first email/SMS before another dial."}
-              </p>
+function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences }) {
+  const preview = messages.slice(-4);
+  const scoreHint =
+    lead.score > 75
+      ? "High intent — prioritize a live call within 48 hours."
+      : lead.score > 50
+        ? "Moderate interest — keep the multi-touch sequence moving."
+        : "Low engagement — soft re-entry via value-first SMS/email.";
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <InfoCard label="Phone" value={lead.phone || "—"} />
+        <InfoCard label="Email" value={lead.email || "—"} />
+        <InfoCard label="Source" value={lead.source || "—"} />
+        <InfoCard label="Score" value={`${lead.score}/100`} accent={lead.score > 75 ? COLORS.green : lead.score > 50 ? COLORS.yellow : COLORS.red} />
+        <InfoCard label="SMS" value={String(smsCount)} />
+        <InfoCard label="Emails" value={String(emailCount)} />
+      </div>
+
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.55 }}>{scoreHint}</div>
+      </div>
+
+      {lead.notes && (
+        <div style={S.card}>
+          <div style={S.cardHeader}>Notes</div>
+          <div style={{ fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted }}>{lead.notes}</div>
+        </div>
+      )}
+
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ ...S.cardHeader, marginBottom: 12 }}>
+          <span>Conversation</span>
+          <button type="button" style={{ ...S.btn("secondary"), padding: "8px 14px", fontSize: 12 }} onClick={onOpenChat}>
+            Open chat
+          </button>
+        </div>
+
+        {messages.length === 0 ? (
+          <div style={{ padding: "28px 12px", textAlign: "center", color: COLORS.textMuted, fontSize: 13 }}>
+            No messages yet. Start a call, SMS, or email to begin the thread.
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onOpenChat}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 12,
+              background: COLORS.bg,
+              padding: "16px 18px",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              color: "inherit",
+            }}
+          >
+            <div style={{ display: "grid", gap: 10 }}>
+              {preview.map((m) => {
+                const inbound = m.direction === "inbound";
+                const isEmail = m.channel === "email";
+                const parsed = isEmail ? parseEmailContent(m.content) : null;
+                const text = isEmail
+                  ? `${parsed.subject || "(no subject)"} — ${(parsed.body || "").replace(/\s+/g, " ").slice(0, 80)}`
+                  : (m.content || "").slice(0, 100);
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: inbound ? "flex-start" : "flex-end",
+                    }}
+                  >
+                    <div
+                      style={{
+                        maxWidth: "78%",
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        background: inbound ? COLORS.surfaceAlt : `${COLORS.orange}18`,
+                        border: `1px solid ${inbound ? COLORS.border : `${COLORS.orange}40`}`,
+                      }}
+                    >
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 4 }}>
+                        {isEmail ? "Email" : "SMS"} · {inbound ? "Lead" : "You"}
+                      </div>
+                      <div style={{ fontSize: 13, lineHeight: 1.4, color: COLORS.text }}>{text}</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+            <div style={{ marginTop: 14, fontSize: 12, color: COLORS.orangeLight, fontWeight: 600 }}>
+              View full conversation →
+            </div>
+          </button>
+        )}
+      </div>
+
+      <div style={{ ...S.card, marginBottom: 0 }}>
+        <div style={S.cardHeader}>Next</div>
+        <button type="button" style={S.btn("ghost")} onClick={onOpenSequences}>
+          Open sequences →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConversationModal({ leadName, messages, onClose, onOpenInbox }) {
+  const scrollerRef = useRef(null);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Conversation with ${leadName}`}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1200,
+        backdropFilter: "blur(4px)",
+        padding: 24,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(720px, 100%)",
+          height: "min(780px, 88vh)",
+          background: COLORS.surface,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 18,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+        }}
+      >
+        <div
+          style={{
+            padding: "20px 24px",
+            borderBottom: `1px solid ${COLORS.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexShrink: 0,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+              Conversation
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{leadName}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 12 }} onClick={() => onOpenInbox("sms")}>
+              SMS Inbox
+            </button>
+            <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 12 }} onClick={() => onOpenInbox("email")}>
+              Email Inbox
+            </button>
+            <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px" }} onClick={onClose} aria-label="Close">
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div
+          ref={scrollerRef}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "24px 28px",
+            background: COLORS.bg,
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
+          {messages.length === 0 ? (
+            <div style={{ textAlign: "center", color: COLORS.textMuted, padding: 48, fontSize: 13 }}>
+              No messages in this thread yet.
+            </div>
+          ) : (
+            messages.map((m) => <ChatBubble key={m.id} msg={m} />)
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({ msg }) {
+  const inbound = msg.direction === "inbound";
+  const isEmail = msg.channel === "email";
+  const parsed = isEmail ? parseEmailContent(msg.content) : null;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: inbound ? "flex-start" : "flex-end",
+        marginBottom: 14,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: "78%",
+          padding: "14px 16px",
+          borderRadius: 16,
+          background: inbound ? COLORS.surfaceAlt : `${COLORS.orange}18`,
+          border: `1px solid ${inbound ? COLORS.border : `${COLORS.orange}44`}`,
+        }}
+      >
+        <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.4 }}>
+          {isEmail ? "Email" : "SMS"} · {inbound ? "Lead" : msg.aiGenerated ? "AI" : "You"}
+          {" · "}
+          {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : ""}
+        </div>
+        {isEmail ? (
+          <>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, lineHeight: 1.35 }}>
+              {parsed.subject || "(no subject)"}
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+              {parsed.body || "(empty)"}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{msg.content}</div>
+        )}
       </div>
     </div>
   );
@@ -268,71 +497,6 @@ function InfoCard({ label, value, accent }) {
     <div style={{ padding: "14px 16px", borderRadius: 10, background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
       <div style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.45, marginBottom: 6 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 650, color: accent || COLORS.text, wordBreak: "break-word" }}>{value}</div>
-    </div>
-  );
-}
-
-function MessagesTab({ messages, onOpenSms, onOpenEmail }) {
-  if (!messages?.length) {
-    return (
-      <div style={{ textAlign: "center", color: COLORS.textMuted, padding: 48, fontSize: 13 }}>
-        No messages yet.
-        <div style={{ marginTop: 14, display: "flex", gap: 8, justifyContent: "center" }}>
-          <button type="button" style={S.btn("secondary")} onClick={onOpenSms}>Open SMS Inbox</button>
-          <button type="button" style={S.btn("secondary")} onClick={onOpenEmail}>Open Email Inbox</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <button type="button" style={S.btn("secondary")} onClick={onOpenSms}>Open SMS Inbox →</button>
-        <button type="button" style={S.btn("secondary")} onClick={onOpenEmail}>Open Email Inbox →</button>
-      </div>
-      <div style={{ display: "grid", gap: 10 }}>
-        {[...messages].reverse().map((m) => {
-          const isEmail = m.channel === "email";
-          const parsed = isEmail ? parseEmailContent(m.content) : null;
-          return (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => (isEmail ? onOpenEmail() : onOpenSms())}
-              style={{
-                textAlign: "left",
-                padding: "12px 14px",
-                borderRadius: 10,
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.surface,
-                color: "inherit",
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                <span style={S.badge(isEmail ? COLORS.purple : COLORS.orange)}>
-                  {isEmail ? "Email" : "SMS"} · {m.direction}
-                </span>
-                <span style={{ fontSize: 11, color: COLORS.textMuted }}>
-                  {m.createdAt ? new Date(m.createdAt).toLocaleString() : ""}
-                </span>
-              </div>
-              {isEmail ? (
-                <>
-                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{parsed.subject || "(no subject)"}</div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.45 }}>
-                    {(parsed.body || "").replace(/\s+/g, " ").slice(0, 140)}
-                  </div>
-                </>
-              ) : (
-                <div style={{ fontSize: 13, lineHeight: 1.45 }}>{(m.content || "").slice(0, 160)}</div>
-              )}
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 }
