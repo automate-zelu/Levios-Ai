@@ -26,7 +26,7 @@ import {
   BUSY_RETRY_DELAY_MS,
 } from "../lib/sdr-state-machine.js";
 import { enqueueJob, fallThroughToSms, storeEnrollmentJobId } from "../lib/sdr-queue.js";
-import { shouldRetryBusyCall } from "../lib/sdr-m1-logic.js";
+import { shouldRetryBusyCall, billableCallMinutes } from "../lib/sdr-m1-logic.js";
 import { AudioPipeline } from "../lib/calling/audio-pipeline.js";
 import { ElevenLabsClient } from "../lib/calling/elevenlabs-client.js";
 import { persistTwilioRecording, openRecordingStream } from "../lib/calling/recording-storage.js";
@@ -142,15 +142,15 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
     // even if the audio pipeline's endCall() didn't run (e.g. unanswered calls).
     if (callStatus === "no-answer") {
       await db.update(sdrCallSessions)
-        .set({ status: "completed", outcome: "no_answer", endedAt: new Date() })
+        .set({ status: "completed", outcome: "no_answer", durationSeconds: callDuration || 0, endedAt: new Date() })
         .where(and(eq(sdrCallSessions.id, sessionId), sql`status != 'completed'`));
     } else if (callStatus === "failed") {
       await db.update(sdrCallSessions)
-        .set({ status: "completed", outcome: "failed", endedAt: new Date() })
+        .set({ status: "completed", outcome: "failed", durationSeconds: callDuration || 0, endedAt: new Date() })
         .where(and(eq(sdrCallSessions.id, sessionId), sql`status != 'completed'`));
     } else if (callStatus === "busy") {
       await db.update(sdrCallSessions)
-        .set({ status: "completed", outcome: "busy", endedAt: new Date() })
+        .set({ status: "completed", outcome: "busy", durationSeconds: callDuration || 0, endedAt: new Date() })
         .where(and(eq(sdrCallSessions.id, sessionId), sql`status != 'completed'`));
     } else if (callStatus === "completed") {
       // Set duration + ensure status=completed (audio-pipeline may have already done this)
@@ -280,12 +280,23 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
           }
         }
 
-        // Increment workspace minute usage
-        if (callDuration > 0) {
+        // Increment workspace minute usage only for answered conversations.
+        // Math.ceil(1/60) previously billed a full minute for 1s no-answer blips.
+        const [sessionForBill] = await db
+          .select({ outcome: sdrCallSessions.outcome, durationSeconds: sdrCallSessions.durationSeconds })
+          .from(sdrCallSessions)
+          .where(eq(sdrCallSessions.id, sessionId));
+
+        const minutes = billableCallMinutes(sessionForBill?.durationSeconds ?? callDuration, {
+          callStatus,
+          outcome: sessionForBill?.outcome,
+        });
+
+        if (minutes > 0) {
           await db
             .update(workspaces)
             .set({
-              monthlyMinutesUsed: sql`${workspaces.monthlyMinutesUsed} + ${Math.ceil(callDuration / 60)}`,
+              monthlyMinutesUsed: sql`${workspaces.monthlyMinutesUsed} + ${minutes}`,
               updatedAt: new Date(),
             })
             .where(eq(workspaces.id, enrollment.workspaceId));

@@ -29,6 +29,7 @@ import {
   assertFallthroughChainLegal,
   planStuckRecovery,
   assertRecoveryChainLegal,
+  billableCallMinutes,
 } from "../lib/sdr-m1-logic.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -169,6 +170,15 @@ describe("M1 minute-limit → SMS fall-through", () => {
     assert.equal(isMinuteLimitReached(1001, 1000), true);
     assert.equal(isMinuteLimitReached(999, 1000), false);
     assert.equal(isMinuteLimitReached(0, 1000), false);
+  });
+
+  it("does not bill minutes for no-answer / busy / failed or tiny unanswered blips", () => {
+    assert.equal(billableCallMinutes(1, { callStatus: "completed", outcome: "no_answer" }), 0);
+    assert.equal(billableCallMinutes(1, { callStatus: "no-answer" }), 0);
+    assert.equal(billableCallMinutes(30, { callStatus: "busy" }), 0);
+    assert.equal(billableCallMinutes(5, { callStatus: "completed", outcome: null }), 0);
+    assert.equal(billableCallMinutes(65, { callStatus: "completed", outcome: "answered" }), 2);
+    assert.equal(billableCallMinutes(12, { callStatus: "completed", outcome: "booked" }), 1);
   });
 
   it("from pending: advances call_initiated → call_no_answer then SMS", () => {

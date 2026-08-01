@@ -25,6 +25,39 @@ export function isMinuteLimitReached(minutesUsed: number, minuteLimit: number): 
   return tierMinuteLimitReached(minutesUsed, minuteLimit);
 }
 
+/**
+ * Billable calling minutes for usage metering.
+ * Unanswered / busy / failed dials do NOT count — even if Twilio reports a few
+ * seconds of ring time (Math.ceil(1/60) would otherwise burn a full minute).
+ * Only answered conversations (incl. booked/qualified/voicemail) are billed,
+ * rounded up to whole minutes.
+ */
+export function billableCallMinutes(
+  durationSeconds: number,
+  opts: { callStatus?: string | null; outcome?: string | null } = {}
+): number {
+  const status = (opts.callStatus || "").toLowerCase();
+  const outcome = (opts.outcome || "").toLowerCase();
+
+  if (status === "no-answer" || status === "busy" || status === "failed") return 0;
+  if (outcome === "no_answer" || outcome === "busy" || outcome === "failed") return 0;
+
+  const secs = Math.max(0, Number(durationSeconds) || 0);
+  if (secs <= 0) return 0;
+
+  const answered =
+    outcome === "answered" ||
+    outcome === "qualified" ||
+    outcome === "booked" ||
+    outcome === "voicemail";
+
+  // Twilio sometimes reports CallStatus=completed with a 1–2s duration for
+  // carrier blips / immediate hangups with no conversation outcome.
+  if (!answered && secs < 15) return 0;
+
+  return Math.ceil(secs / 60);
+}
+
 // ─── SMS FALL-THROUGH PLAN ────────────────────────────────────────────────────
 
 export type SmsFallthroughPlan =
