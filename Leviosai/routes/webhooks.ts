@@ -3,10 +3,13 @@ import { storage } from "../lib/storage.js";
 import { Reactor } from "../reactor/reactor.js";
 import { db } from "../lib/db.js";
 import { organizations, sdrEnrollments, leads } from "../lib/schema.js";
-import { eq, and, desc } from "drizzle-orm";
-import { stateMachine } from "../lib/sdr-state-machine.js";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { cancelJob } from "../lib/sdr-queue.js";
 import { validateTwilioSms, validateTwilioGeneric } from "../middleware/twilioSignature.js";
+import {
+  handleSdrEmailConversation,
+  handleSdrSmsConversation,
+} from "../lib/sdr-followup-reply.js";
 
 const router = Router();
 
@@ -29,6 +32,7 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
     console.log(`📩 Inbound SMS from ${From}: ${Body.substring(0, 50)}...`);
 
     const lead = await storage.getLeadByPhone(From);
+    let twimlBody = "";
 
     if (lead) {
       // Always store the CRM message
@@ -41,33 +45,44 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
         aiGenerated: false,
       });
 
-      // ── SDR sequence reply gate ──────────────────────────────────────────────
-      // If this lead has an active enrollment in sms_sent state, this reply
-      // stops the sequence: cancel the SMS_TIMEOUT job and mark sms_replied.
+      // Active SDR SMS conversation: waiting for reply, or already chatting
       const [smsEnrollment] = await db
         .select()
         .from(sdrEnrollments)
         .where(and(
           eq(sdrEnrollments.leadId, lead.id),
-          eq(sdrEnrollments.status, "sms_sent"),
+          inArray(sdrEnrollments.status, ["sms_sent", "sms_replied"]),
         ))
         .orderBy(desc(sdrEnrollments.updatedAt))
         .limit(1);
 
       if (smsEnrollment) {
-        if (smsEnrollment.bullmqJobId) {
+        if (smsEnrollment.status === "sms_sent" && smsEnrollment.bullmqJobId) {
           await cancelJob(smsEnrollment.bullmqJobId);
         }
-        await stateMachine.transition(smsEnrollment.id, "sms_replied", {
-          channel: "sms",
-          direction: "inbound",
-          replyText: Body.substring(0, 500),
-          from: From,
-          messageSid: MessageSid,
+
+        const result = await handleSdrSmsConversation({
+          enrollmentId: smsEnrollment.id,
+          lead: {
+            id: lead.id,
+            firstName: lead.firstName,
+            phone: lead.phone,
+          },
+          workspaceId: smsEnrollment.workspaceId,
+          inboundText: Body,
+          fromPhone: From,
         });
-        console.log(`✅ SDR: SMS reply from ${From} — enrollment ${smsEnrollment.id} → sms_replied`);
+
+        console.log(
+          `✅ SDR: SMS conversation from ${From} — intent=${result.intent} sent=${result.sent} booked=${!!result.booked}`
+        );
+
+        // Prefer Twilio REST send (already done); empty TwiML avoids duplicate SMS.
+        // If REST send failed, fall back to TwiML Message.
+        if (!result.sent && result.twimlMessage) {
+          twimlBody = result.twimlMessage;
+        }
       }
-      // ────────────────────────────────────────────────────────────────────────
 
       await storage.logActivity({
         entityType: "lead",
@@ -77,7 +92,6 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
         organizationId: lead.organizationId,
       });
 
-      // Route through Reactor for AI processing (sentiment, etc.)
       if (await isReactorEnabled(lead.organizationId)) {
         const reactor = Reactor.getInstance();
         reactor.emit({
@@ -91,7 +105,11 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
       console.log(`⚠️  Inbound SMS from unknown number: ${From}`);
     }
 
-    res.type("text/xml").send("<Response></Response>");
+    if (twimlBody) {
+      res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${twimlBody}</Message></Response>`);
+    } else {
+      res.type("text/xml").send("<Response></Response>");
+    }
   } catch (error: any) {
     console.error("Twilio SMS webhook error:", error.message);
     res.type("text/xml").send("<Response></Response>");
@@ -143,33 +161,17 @@ router.post("/api/webhooks/twilio/voice", async (req: Request, res: Response) =>
   res.type("text/xml").send(twiml);
 });
 
-// ─── SendGrid Inbound Parse — Email Reply Webhook ────────────────────────────
-// SendGrid posts multipart/form-data when a lead replies to an SDR email.
-// We match the reply to an active enrollment by the lead's email address,
-// cancel the EMAIL_TIMEOUT BullMQ job, and transition the enrollment to email_replied.
-//
-// Setup in SendGrid dashboard:
-//   Settings → Inbound Parse → Add Host & URL
-//   MX Record:  mx.sendgrid.net  (add to DNS)
-//   URL:        {BASE_URL}/api/webhooks/email/reply
-//
-// SendGrid posts: from, to, subject, text, html, envelope (JSON string)
-
+// ─── Inbound email reply webhook (SendGrid Inbound Parse or similar) ─────────
 router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => {
   try {
-    // SendGrid sends multipart — express.urlencoded or express-formidable needed.
-    // With express.urlencoded({ extended: true }) already mounted in server.ts, form
-    // fields are available on req.body when Content-Type is application/x-www-form-urlencoded.
-    // For multipart, SendGrid also POSTs as x-www-form-urlencoded in basic parse mode.
     const from    = req.body.from    as string | undefined;
     const subject = req.body.subject as string | undefined;
     const text    = req.body.text    as string | undefined;
 
     if (!from) {
-      return res.sendStatus(200); // Always 200 to SendGrid — don't retry
+      return res.sendStatus(200);
     }
 
-    // Extract email address from "Name <email@example.com>" format
     const emailMatch = from.match(/<([^>]+)>/) ?? from.match(/\S+@\S+/);
     const replyEmail = emailMatch ? (emailMatch[1] ?? emailMatch[0]).toLowerCase().trim() : null;
 
@@ -180,9 +182,13 @@ router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => 
 
     console.log(`📧 Inbound email reply from ${replyEmail}`);
 
-    // Find lead by email address
     const [lead] = await db
-      .select({ id: leads.id, organizationId: leads.organizationId })
+      .select({
+        id: leads.id,
+        organizationId: leads.organizationId,
+        firstName: leads.firstName,
+        email: leads.email,
+      })
       .from(leads)
       .where(eq(leads.email, replyEmail))
       .limit(1);
@@ -192,33 +198,6 @@ router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => 
       return res.sendStatus(200);
     }
 
-    // Check for active enrollment in email_sent state
-    const [emailEnrollment] = await db
-      .select()
-      .from(sdrEnrollments)
-      .where(and(
-        eq(sdrEnrollments.leadId, lead.id),
-        eq(sdrEnrollments.status, "email_sent"),
-      ))
-      .orderBy(desc(sdrEnrollments.updatedAt))
-      .limit(1);
-
-    if (emailEnrollment) {
-      // Cancel the EMAIL_TIMEOUT job — lead responded, don't exhaust the sequence
-      if (emailEnrollment.bullmqJobId) {
-        await cancelJob(emailEnrollment.bullmqJobId);
-      }
-      await stateMachine.transition(emailEnrollment.id, "email_replied", {
-        channel: "email",
-        direction: "inbound",
-        replySubject: subject?.substring(0, 200),
-        replyText:    text?.substring(0, 500),
-        from: replyEmail,
-      });
-      console.log(`✅ SDR: Email reply from ${replyEmail} — enrollment ${emailEnrollment.id} → email_replied`);
-    }
-
-    // Store inbound email in CRM message thread
     try {
       await storage.createLeadMessage({
         leadId: lead.id,
@@ -232,7 +211,36 @@ router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => 
       console.warn("Email reply: failed to store lead message:", err.message);
     }
 
-    // Log activity to CRM regardless of SDR state
+    const [emailEnrollment] = await db
+      .select()
+      .from(sdrEnrollments)
+      .where(and(
+        eq(sdrEnrollments.leadId, lead.id),
+        inArray(sdrEnrollments.status, ["email_sent", "email_replied"]),
+      ))
+      .orderBy(desc(sdrEnrollments.updatedAt))
+      .limit(1);
+
+    if (emailEnrollment && lead.organizationId) {
+      if (emailEnrollment.status === "email_sent" && emailEnrollment.bullmqJobId) {
+        await cancelJob(emailEnrollment.bullmqJobId);
+      }
+
+      const result = await handleSdrEmailConversation({
+        enrollmentId: emailEnrollment.id,
+        lead,
+        workspaceId: emailEnrollment.workspaceId,
+        organizationId: lead.organizationId,
+        inboundText: text || subject || "",
+        inboundSubject: subject,
+        fromEmail: replyEmail,
+      });
+
+      console.log(
+        `✅ SDR: Email conversation from ${replyEmail} — intent=${result.intent} sent=${result.sent} booked=${!!result.booked}`
+      );
+    }
+
     await storage.logActivity({
       entityType:     "lead",
       entityId:       lead.id,
@@ -244,7 +252,7 @@ router.post("/api/webhooks/email/reply", async (req: Request, res: Response) => 
     res.sendStatus(200);
   } catch (error: any) {
     console.error("Email reply webhook error:", error.message);
-    res.sendStatus(200); // Always 200 — never cause SendGrid to retry
+    res.sendStatus(200);
   }
 });
 

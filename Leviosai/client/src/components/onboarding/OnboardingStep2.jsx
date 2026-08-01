@@ -18,13 +18,15 @@ function defaultsFor(user) {
       `Keep every response under 3 sentences and always end with a clear next step or question.`,
     knowledgeBase: "",
     smsTemplate:
-      `Hi [First Name]! I'm reaching out from ${orgLabel}. ` +
-      `I'd love to reconnect — do you have 10 minutes this week? Just reply YES and we'll take it from there!`,
-    emailSubject: `Checking in from ${orgLabel}`,
+      `Hi {{first_name}} — it's ${orgLabel}. I tried reaching you earlier and would love to reconnect. ` +
+      `Do you have 10 minutes this week for a quick chat? Reply YES if you're open, or tell me a better time.`,
+    emailSubject: `{{first_name}}, quick check-in from ${orgLabel}`,
     emailBody:
-      `Hi [First Name],\n\nI hope things are going well! ` +
-      `I wanted to personally reach out and see if now is a better time to connect.\n\n` +
-      `Would you be open to a quick 10-minute call this week?\n\nBest,\n${firstName}\n${orgLabel}`,
+      `Hi {{first_name}},\n\n` +
+      `I hope you're doing well. I reached out recently and wanted to follow up personally from ${orgLabel}.\n\n` +
+      `Would you be open to a quick 10-minute call this week? If yes, reply with a couple of times that work — or tell me if now isn't a fit.\n\n` +
+      `Looking forward to hearing from you,\n` +
+      `${firstName}\n${orgLabel}`,
     dormantDays: 7,
     waitCallHrs: 2,
     waitSmsHrs: 4,
