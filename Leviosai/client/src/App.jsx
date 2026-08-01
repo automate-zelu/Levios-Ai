@@ -4208,9 +4208,9 @@ export default function CatalystApp() {
     // All AI SDR product surfaces in one section (setup → config → voice → calls)
     { section: "AI SDR" },
     { name: "SDR Setup", icon: "🛠️", sub: "Twilio · Gmail" },
-    { name: "SDR Agent", icon: "🤖", sub: "Prompt · Sequence" },
+    { name: "SDR Agent", icon: "🤖", sub: "Prompt · Templates" },
     { name: "Voice AI", icon: "🎙️", sub: "ElevenLabs voice" },
-    { name: "AI Calling", icon: "📞", sub: "Logs · Recordings" },
+    { name: "AI Calling", icon: "📞", sub: "Logs · Sequences" },
     { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
     { name: "Email Inbox", icon: "✉️", sub: "Email threads" },
     { section: "Integrations" },

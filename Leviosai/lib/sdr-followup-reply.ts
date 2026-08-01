@@ -183,7 +183,8 @@ export async function handleSdrSmsConversation(opts: {
 
   const status = enrollment.status as EnrollmentStatus;
 
-  // Mark replied if still waiting on SMS
+  // Mark replied if still waiting on SMS; if sequence already moved to email,
+  // treat the SMS as the reply on the email step so conversation continues.
   if (status === "sms_sent" && stateMachine.canTransition("sms_sent", "sms_replied")) {
     await stateMachine.transition(opts.enrollmentId, "sms_replied", {
       channel: "sms",
@@ -191,6 +192,15 @@ export async function handleSdrSmsConversation(opts: {
       replyText: opts.inboundText.substring(0, 500),
       intent,
       from: opts.fromPhone,
+    });
+  } else if (status === "email_sent" && stateMachine.canTransition("email_sent", "email_replied")) {
+    await stateMachine.transition(opts.enrollmentId, "email_replied", {
+      channel: "sms",
+      direction: "inbound",
+      replyText: opts.inboundText.substring(0, 500),
+      intent,
+      from: opts.fromPhone,
+      via: "sms_after_email",
     });
   } else {
     await db.insert(sdrLogs).values({

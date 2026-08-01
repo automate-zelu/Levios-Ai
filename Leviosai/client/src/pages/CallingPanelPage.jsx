@@ -5,6 +5,7 @@ import { CallLogTable } from "../components/calling/CallLogTable.jsx";
 import { CallingAnalyticsCards } from "../components/calling/CallingAnalyticsCards.jsx";
 import { RecordingPlayer } from "../components/calling/RecordingPlayer.jsx";
 import { TranscriptViewer } from "../components/calling/TranscriptViewer.jsx";
+import { EnrollmentSequencesPanel } from "../components/sdr/EnrollmentSequencesPanel.jsx";
 
 const OUTCOME_COLORS = {
   booked: COLORS.green, qualified: COLORS.teal, answered: COLORS.blue,
@@ -12,6 +13,12 @@ const OUTCOME_COLORS = {
 };
 const STATUS_COLORS = { initiated: COLORS.yellow, active: COLORS.green, completed: COLORS.textMuted };
 const STATUS_LABELS = { initiated: "Dialing…", active: "Live", completed: "Completed" };
+
+const TABS = [
+  { id: "log", label: "Call Log" },
+  { id: "sequences", label: "Sequences" },
+  { id: "detail", label: "Session Detail" },
+];
 
 export default function CallingPanelPage() {
   const [sessions, setSessions] = useState([]);
@@ -65,16 +72,16 @@ export default function CallingPanelPage() {
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>AI Calling</h2>
         <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
-          Live call sessions powered by Twilio + Deepgram + GPT-4o + ElevenLabs
+          Call sessions, recordings, and SDR sequence enrollments (call → SMS → email)
         </p>
       </div>
 
       <CallingAnalyticsCards analytics={analytics} />
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, marginTop: 8 }}>
-        {["log", "detail"].map((t) => (
-          <div key={t} style={S.tab(activeTab === t)} onClick={() => setActiveTab(t)}>
-            {t === "log" ? "Call Log" : "Session Detail"}
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, marginTop: 8, flexWrap: "wrap" }}>
+        {TABS.map((t) => (
+          <div key={t.id} style={S.tab(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
+            {t.label}
           </div>
         ))}
       </div>
@@ -85,6 +92,8 @@ export default function CallingPanelPage() {
           onSelect={(s) => { setSelected(s); setActiveTab("detail"); }}
         />
       )}
+
+      {activeTab === "sequences" && <EnrollmentSequencesPanel />}
 
       {activeTab === "detail" && selected && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

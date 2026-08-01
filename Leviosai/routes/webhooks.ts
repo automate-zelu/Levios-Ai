@@ -45,19 +45,28 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
         aiGenerated: false,
       });
 
-      // Active SDR SMS conversation: waiting for reply, or already chatting
+      // Active SDR conversation via SMS — include email_* so late SMS replies
+      // still get an AI response after SMS timed out and email already went out.
       const [smsEnrollment] = await db
         .select()
         .from(sdrEnrollments)
         .where(and(
           eq(sdrEnrollments.leadId, lead.id),
-          inArray(sdrEnrollments.status, ["sms_sent", "sms_replied"]),
+          inArray(sdrEnrollments.status, [
+            "sms_sent",
+            "sms_replied",
+            "email_sent",
+            "email_replied",
+          ]),
         ))
         .orderBy(desc(sdrEnrollments.updatedAt))
         .limit(1);
 
       if (smsEnrollment) {
-        if (smsEnrollment.status === "sms_sent" && smsEnrollment.bullmqJobId) {
+        if (
+          (smsEnrollment.status === "sms_sent" || smsEnrollment.status === "email_sent") &&
+          smsEnrollment.bullmqJobId
+        ) {
           await cancelJob(smsEnrollment.bullmqJobId);
         }
 

@@ -1,4 +1,5 @@
 import { COLORS, S } from "../../theme.js";
+import { parseEmailContent } from "../../lib/emailMessage.js";
 
 export const STEP_LABELS = {
   pending: "Enrolled — Awaiting First Contact",
@@ -149,6 +150,9 @@ function CallSessionCard({ session }) {
 
 function MessageBubble({ msg }) {
   const inbound = msg.direction === "inbound";
+  const isEmail = msg.channel === "email";
+  const parsed = isEmail ? parseEmailContent(msg.content) : null;
+
   return (
     <div
       style={{
@@ -172,7 +176,20 @@ function MessageBubble({ msg }) {
           {" · "}
           {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : ""}
         </div>
-        <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{msg.content}</div>
+        {isEmail ? (
+          <div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 2 }}>Subject</div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, lineHeight: 1.35 }}>
+              {parsed.subject || "(no subject)"}
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 2 }}>Body</div>
+            <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+              {parsed.body || "(empty)"}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{msg.content}</div>
+        )}
       </div>
     </div>
   );
