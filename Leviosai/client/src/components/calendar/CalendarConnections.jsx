@@ -150,6 +150,8 @@ export default function CalendarConnections({ colors, styles: S }) {
       const nextPrompt = injectCalendarPromptBlock(cfg.systemPrompt, {
         provider: status.activeProvider,
         accountEmail: conn?.accountEmail,
+        prefs: status.bookingPrefs,
+        timezone: status.bookingPrefs?.timezone,
       });
       await sdrApi.saveConfig({
         ...cfg,

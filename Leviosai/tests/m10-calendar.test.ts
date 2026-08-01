@@ -278,4 +278,35 @@ describe("M10 prompt block + open slots", () => {
       assert.ok(!(s.start < busyEnd && s.end > busyStart), "slot overlaps busy");
     }
   });
+
+  it("humanizes Google Calendar API disabled errors", async () => {
+    const { humanizeCalendarApiError } = await import("../lib/calendar/service.js");
+    const msg = humanizeCalendarApiError(
+      "Google Calendar API has not been used in project 123 before or it is disabled. Enable it by visiting https://example.com"
+    );
+    assert.match(msg, /Google Calendar API is disabled/);
+    assert.match(msg, /console\.cloud\.google\.com/);
+  });
+
+  it("normalizes booking prefs", async () => {
+    const { normalizeCalendarBookingPrefs, DEFAULT_CALENDAR_BOOKING_PREFS } = await import(
+      "../lib/calendar/booking-helpers.js"
+    );
+    const prefs = normalizeCalendarBookingPrefs({ daysAhead: 99, offerCount: 0, timezone: "Asia/Karachi" });
+    assert.equal(prefs.daysAhead, 21);
+    assert.equal(prefs.offerCount, 1);
+    assert.equal(prefs.timezone, "Asia/Karachi");
+    assert.equal(prefs.durationMinutes, DEFAULT_CALENDAR_BOOKING_PREFS.durationMinutes);
+  });
+
+  it("exposes booking-prefs routes", () => {
+    const src = readFileSync(path.join(root, "routes/calendar.ts"), "utf8");
+    assert.match(src, /\/api\/calendar\/booking-prefs/);
+  });
+
+  it("ships CalendarToolsPanel on SDR Agent", () => {
+    assert.ok(existsSync(path.join(root, "client/src/components/sdr/CalendarToolsPanel.jsx")));
+    const page = readFileSync(path.join(root, "client/src/pages/SDRConfigPage.jsx"), "utf8");
+    assert.match(page, /CalendarToolsPanel/);
+  });
 });

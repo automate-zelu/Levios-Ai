@@ -18,6 +18,11 @@ ZeluAI_Scope_of_Work_*.txt
 Leviosai/env file
 *.pem
 *.key
+# Google Cloud service account keys (never commit)
+levios-ai-*.json
+**/service-account*.json
+**/*-credentials.json
+!**/*-credentials.example.json
 
 # Dependencies & build
 node_modules/

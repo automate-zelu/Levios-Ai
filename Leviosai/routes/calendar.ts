@@ -25,8 +25,11 @@ import {
   listCalendarsForOrg,
   setActiveCalendarProvider,
   getCalendarAvailability,
+  getCalendarBookingPrefs,
+  setCalendarBookingPrefs,
 } from "../lib/calendar/service.js";
 import type { CalendarProvider } from "../lib/calendar/types.js";
+import { normalizeCalendarBookingPrefs } from "../lib/calendar/booking-helpers.js";
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "catalyst-dev-secret-change-in-production";
@@ -269,6 +272,33 @@ router.post("/api/calendar/availability", requireAuth, async (req: Request, res:
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/calendar/booking-prefs
+router.get("/api/calendar/booking-prefs", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = req.organizationId;
+    if (!orgId) return res.status(400).json({ error: "No organization" });
+    const prefs = await getCalendarBookingPrefs(orgId);
+    res.json({ prefs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/calendar/booking-prefs
+router.put("/api/calendar/booking-prefs", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = req.organizationId;
+    if (!orgId) return res.status(400).json({ error: "No organization" });
+    const prefs = await setCalendarBookingPrefs(
+      orgId,
+      normalizeCalendarBookingPrefs(req.body?.prefs ?? req.body ?? {})
+    );
+    res.json({ prefs });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 

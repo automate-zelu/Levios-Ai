@@ -15,6 +15,7 @@ import { z } from "zod";
 import { searchWorkspaceKnowledgeBase } from "./langchain-kb.js";
 import {
   getCalendarAvailability,
+  getCalendarBookingPrefs,
   bookAppointmentWithCalendar,
 } from "../calendar/service.js";
 import { hasCalendarPromptBlock } from "../calendar/prompt-block.js";
@@ -113,23 +114,55 @@ export class LangChainCallAgent {
         }),
         func: async ({ daysAhead, durationMinutes }) => {
           if (!self.organizationId) {
-            return JSON.stringify({ error: "Calendar not available for this call", slots: [] });
+            return JSON.stringify({
+              error: "Calendar not available for this call",
+              slots: [],
+              hint: "Apologize briefly and ask the lead to share preferred times, or offer to follow up by SMS later.",
+            });
           }
-          const result = await getCalendarAvailability({
-            organizationId: self.organizationId,
-            daysAhead: daysAhead ?? 5,
-            durationMinutes: durationMinutes ?? 30,
-            maxSlots: 6,
-          });
-          return JSON.stringify({
-            connected: result.connected,
-            timezone: result.timezone,
-            error: result.error,
-            slots: result.slots,
-            hint: result.slots.length
-              ? "Offer 2-3 of these slots in natural speech. Do not invent other times."
-              : "No open slots found — ask the lead for preferred days or offer to follow up by SMS.",
-          });
+          try {
+            const prefs = await getCalendarBookingPrefs(self.organizationId);
+            const result = await getCalendarAvailability({
+              organizationId: self.organizationId,
+              daysAhead,
+              durationMinutes,
+            });
+            const offerCount = prefs.offerCount || 3;
+            const slots = result.slots.slice(0, Math.max(offerCount + 2, offerCount));
+
+            if (result.error || !result.connected) {
+              return JSON.stringify({
+                connected: result.connected,
+                timezone: result.timezone,
+                error: result.error || "Calendar unavailable",
+                slots: [],
+                hint:
+                  "Tell the lead the calendar is temporarily unavailable, ask them for preferred times, and say you will confirm shortly or they can try again later. Do not invent open slots.",
+              });
+            }
+
+            return JSON.stringify({
+              connected: result.connected,
+              timezone: result.timezone,
+              error: result.error,
+              slots,
+              prefs: {
+                daysAhead: prefs.daysAhead,
+                durationMinutes: prefs.durationMinutes,
+                offerCount,
+              },
+              hint: slots.length
+                ? `Offer up to ${offerCount} of these slots in natural speech. Do not invent other times. If they ask about a time not listed, say that slot is not available.`
+                : "No open slots found — say nothing is free in that window, ask for preferred days, or offer to follow up by SMS.",
+            });
+          } catch (err: any) {
+            return JSON.stringify({
+              connected: false,
+              error: err?.message || "Availability check failed",
+              slots: [],
+              hint: "Apologize, say you cannot check the calendar right now, and ask them to try again later or share preferred times for a follow-up.",
+            });
+          }
         },
       }),
       new DynamicStructuredTool({
@@ -143,11 +176,19 @@ export class LangChainCallAgent {
         }),
         func: async ({ scheduledAt, title, durationMinutes }) => {
           if (!self.organizationId || !self.leadId) {
-            return JSON.stringify({ ok: false, error: "Missing organization or lead for booking" });
+            return JSON.stringify({
+              ok: false,
+              error: "Missing organization or lead for booking",
+              hint: "Apologize and ask them to try again later or confirm by SMS.",
+            });
           }
           const when = new Date(scheduledAt);
           if (Number.isNaN(when.getTime())) {
-            return JSON.stringify({ ok: false, error: "Invalid scheduledAt datetime" });
+            return JSON.stringify({
+              ok: false,
+              error: "Invalid scheduledAt datetime",
+              hint: "Ask the lead to confirm one of the offered slots again.",
+            });
           }
           if (self.midCallBooking) {
             return JSON.stringify({
@@ -155,32 +196,52 @@ export class LangChainCallAgent {
               alreadyBooked: true,
               appointmentId: self.midCallBooking.appointmentId,
               scheduledAt: self.midCallBooking.scheduledAt.toISOString(),
+              hint: "Confirm the already-booked time verbally.",
             });
           }
 
-          const result = await bookAppointmentWithCalendar({
-            organizationId: self.organizationId,
-            leadId: self.leadId,
-            title: title || "Consultation",
-            scheduledAt: when,
-            durationMinutes: durationMinutes ?? 30,
-          });
+          try {
+            const prefs = await getCalendarBookingPrefs(self.organizationId);
+            const result = await bookAppointmentWithCalendar({
+              organizationId: self.organizationId,
+              leadId: self.leadId,
+              title: title || "Consultation",
+              scheduledAt: when,
+              durationMinutes: durationMinutes ?? prefs.durationMinutes,
+            });
 
-          self.midCallBooking = {
-            scheduledAt: when,
-            appointmentId: result.appointmentId,
-          };
+            if (!result.synced) {
+              return JSON.stringify({
+                ok: false,
+                appointmentId: result.appointmentId,
+                syncedToCalendar: false,
+                syncError: result.syncError,
+                scheduledAt: when.toISOString(),
+                hint:
+                  "Tell the lead booking failed on the calendar. Apologize, ask them to try again later, or offer to confirm by SMS/email. Do not say the meeting is confirmed.",
+              });
+            }
 
-          return JSON.stringify({
-            ok: true,
-            appointmentId: result.appointmentId,
-            syncedToCalendar: result.synced,
-            syncError: result.syncError,
-            scheduledAt: when.toISOString(),
-            message: result.synced
-              ? "Booked on CRM and calendar. Confirm the time verbally with the lead."
-              : "Booked in CRM; calendar sync may have failed — still confirm the time with the lead.",
-          });
+            self.midCallBooking = {
+              scheduledAt: when,
+              appointmentId: result.appointmentId,
+            };
+
+            return JSON.stringify({
+              ok: true,
+              appointmentId: result.appointmentId,
+              syncedToCalendar: true,
+              scheduledAt: when.toISOString(),
+              message: "Booked on CRM and calendar. Confirm the time verbally with the lead.",
+              hint: "Confirm the booking succeeded and restate the time clearly.",
+            });
+          } catch (err: any) {
+            return JSON.stringify({
+              ok: false,
+              error: err?.message || "Booking failed",
+              hint: "Apologize, say booking failed, and ask them to try again later or follow up by SMS.",
+            });
+          }
         },
       }),
     ];

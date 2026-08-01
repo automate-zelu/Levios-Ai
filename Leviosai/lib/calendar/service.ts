@@ -5,10 +5,14 @@ import { db } from "../db.js";
 import { storage } from "../storage.js";
 import {
   ACTIVE_CALENDAR_SETTING_KEY,
+  CALENDAR_BOOKING_PREFS_KEY,
+  DEFAULT_CALENDAR_BOOKING_PREFS,
+  normalizeCalendarBookingPrefs,
   buildCalendarEventPayload,
   defaultAppointmentTitle,
   publicConnectionStatus,
   resolveActiveProvider,
+  type CalendarBookingPrefs,
 } from "./booking-helpers.js";
 import {
   createProviderEvent,
@@ -51,6 +55,7 @@ export interface AvailabilityResult {
   slots: AvailabilitySlotDto[];
   connected: boolean;
   error?: string;
+  prefs?: CalendarBookingPrefs;
 }
 async function readOrgSettings(organizationId: number): Promise<Record<string, any>> {
   try {
@@ -85,15 +90,37 @@ export async function getCalendarStatus(organizationId: number) {
     activeSetting: settings[ACTIVE_CALENDAR_SETTING_KEY],
     connected: connectedProviders,
   });
+  const bookingPrefs = normalizeCalendarBookingPrefs(settings[CALENDAR_BOOKING_PREFS_KEY]);
 
   return {
     connections: publicConnectionStatus(connections),
     activeProvider,
+    bookingPrefs,
     providersConfigured: {
       google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
       outlook: !!(process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET),
     },
   };
+}
+
+export async function getCalendarBookingPrefs(
+  organizationId: number
+): Promise<CalendarBookingPrefs> {
+  const settings = await readOrgSettings(organizationId);
+  return normalizeCalendarBookingPrefs(settings[CALENDAR_BOOKING_PREFS_KEY]);
+}
+
+export async function setCalendarBookingPrefs(
+  organizationId: number,
+  prefs: Partial<CalendarBookingPrefs>
+): Promise<CalendarBookingPrefs> {
+  const next = normalizeCalendarBookingPrefs({
+    ...DEFAULT_CALENDAR_BOOKING_PREFS,
+    ...(await getCalendarBookingPrefs(organizationId)),
+    ...prefs,
+  });
+  await writeOrgSetting(organizationId, CALENDAR_BOOKING_PREFS_KEY, next);
+  return next;
 }
 
 export async function setActiveCalendarProvider(
@@ -172,13 +199,31 @@ function formatSlotLabel(start: Date, end: Date, timeZone: string): string {
   }
 }
 
+/** Make Google Cloud “API not enabled” errors actionable for agents + UI. */
+export function humanizeCalendarApiError(raw: string | null | undefined): string {
+  const msg = String(raw || "").trim();
+  if (!msg) return "Availability check failed";
+  if (/has not been used|is disabled|Enable it by visiting/i.test(msg)) {
+    return (
+      "Google Calendar API is disabled for this Google Cloud project. " +
+      "Enable “Google Calendar API” at https://console.cloud.google.com/apis/library/calendar-json.googleapis.com " +
+      "then wait a few minutes and retry."
+    );
+  }
+  if (/ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficientPermissions/i.test(msg)) {
+    return "Calendar permission is insufficient. Reconnect Google Calendar with calendar access enabled.";
+  }
+  return msg;
+}
+
 /**
  * Return open appointment slots from the org's active calendar (Google FreeBusy).
  */
 export async function getCalendarAvailability(
   query: AvailabilityQuery
 ): Promise<AvailabilityResult> {
-  const timezone = query.timezone || "America/New_York";
+  const prefs = await getCalendarBookingPrefs(query.organizationId);
+  const timezone = query.timezone || prefs.timezone || "America/New_York";
   const status = await getCalendarStatus(query.organizationId);
   const provider = status.activeProvider;
 
@@ -203,8 +248,8 @@ export async function getCalendarAvailability(
     };
   }
 
-  const daysAhead = Math.min(21, Math.max(1, query.daysAhead ?? 5));
-  const durationMinutes = query.durationMinutes ?? 30;
+  const daysAhead = Math.min(21, Math.max(1, query.daysAhead ?? prefs.daysAhead));
+  const durationMinutes = query.durationMinutes ?? prefs.durationMinutes;
   const timeMin = query.timeMin || new Date(Date.now() + 60 * 60_000);
   const timeMax =
     query.timeMax || new Date(timeMin.getTime() + daysAhead * 24 * 60 * 60_000);
@@ -222,8 +267,10 @@ export async function getCalendarAvailability(
       timeMax,
       busy,
       durationMinutes,
-      maxSlots: query.maxSlots ?? 8,
+      maxSlots: query.maxSlots ?? prefs.maxSlots,
       timezone,
+      dayStartHour: prefs.dayStartHour,
+      dayEndHour: prefs.dayEndHour,
     });
 
     return {
@@ -235,6 +282,7 @@ export async function getCalendarAvailability(
         end: s.end.toISOString(),
         label: formatSlotLabel(s.start, s.end, timezone),
       })),
+      prefs,
     };
   } catch (err: any) {
     return {
@@ -242,7 +290,8 @@ export async function getCalendarAvailability(
       timezone,
       connected: true,
       slots: [],
-      error: err?.message || "Availability check failed",
+      error: humanizeCalendarApiError(err?.message || "Availability check failed"),
+      prefs,
     };
   }
 }
@@ -328,7 +377,7 @@ export async function bookAppointmentWithCalendar(
       calendarEventId: null,
       calendarProvider: provider,
       synced: false,
-      syncError: err?.message || "Calendar sync failed",
+      syncError: humanizeCalendarApiError(err?.message || "Calendar sync failed"),
     };
   }
 }

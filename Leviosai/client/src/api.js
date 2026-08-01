@@ -188,6 +188,9 @@ export const calendarApi = {
     }),
   checkAvailability: (body = {}) =>
     request("/api/calendar/availability", { method: "POST", body: JSON.stringify(body) }),
+  getBookingPrefs: () => request("/api/calendar/booking-prefs"),
+  saveBookingPrefs: (prefs) =>
+    request("/api/calendar/booking-prefs", { method: "PUT", body: JSON.stringify({ prefs }) }),
 };
 
 // Gmail BYOT — send SDR follow-ups from the customer's Gmail (n8n-style OAuth)

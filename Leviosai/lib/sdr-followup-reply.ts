@@ -12,7 +12,11 @@ import { stateMachine } from "./sdr-state-machine.js";
 import { getClientForWorkspace } from "./twilio-subaccount.js";
 import { sendEmailViaGmail } from "./gmail/send.js";
 import { storage } from "./storage.js";
-import { bookAppointmentWithCalendar } from "./calendar/service.js";
+import {
+  bookAppointmentWithCalendar,
+  getCalendarAvailability,
+  getCalendarBookingPrefs,
+} from "./calendar/service.js";
 
 export type FollowupIntent = "agree" | "disagree" | "question" | "other";
 
@@ -28,6 +32,7 @@ export interface FollowupReplyResult {
   replyText: string;
   sent: boolean;
   booked?: boolean;
+  calendarSynced?: boolean;
   error?: string;
 }
 
@@ -123,38 +128,153 @@ export async function extractScheduledAtFromText(text: string): Promise<Date | n
   }
 }
 
-async function maybeBookFollowupAppointment(opts: {
+async function resolveOrgId(workspaceId: string): Promise<number | null> {
+  const [ws] = await db
+    .select({ organizationId: workspaces.organizationId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  return ws?.organizationId ?? null;
+}
+
+function wantsSchedulingHelp(text: string, intent: FollowupIntent): boolean {
+  if (intent === "agree") return true;
+  const t = (text || "").toLowerCase();
+  return /\b(available|availability|schedule|book|meeting|call|slot|time|when can|what times)\b/.test(t);
+}
+
+/** Book if a concrete time is present; otherwise offer real open slots from the calendar. */
+export async function resolveFollowupScheduling(opts: {
   workspaceId: string;
   leadId: number;
   inboundText: string;
   channel: "sms" | "email";
-}): Promise<{ bookedAppt: boolean; scheduledAt?: string }> {
+  intent: FollowupIntent;
+  firstName: string;
+  companyName: string;
+  draftReply: string;
+}): Promise<{
+  reply: string;
+  bookedAppt: boolean;
+  calendarSynced: boolean;
+  scheduledAt?: string;
+  syncError?: string;
+}> {
+  const name = (opts.firstName || "").trim() || "there";
+  const brand = (opts.companyName || "").trim() || "our team";
+  const orgId = await resolveOrgId(opts.workspaceId);
+
+  if (!orgId || !wantsSchedulingHelp(opts.inboundText, opts.intent)) {
+    return { reply: opts.draftReply, bookedAppt: false, calendarSynced: false };
+  }
+
   const scheduledAt = await extractScheduledAtFromText(opts.inboundText);
-  if (!scheduledAt) return { bookedAppt: false };
 
-  const [ws] = await db
-    .select({ organizationId: workspaces.organizationId })
-    .from(workspaces)
-    .where(eq(workspaces.id, opts.workspaceId));
-  if (!ws?.organizationId) return { bookedAppt: false };
+  if (scheduledAt) {
+    try {
+      const lead = await storage.getLead(opts.leadId);
+      const prefs = await getCalendarBookingPrefs(orgId);
+      const result = await bookAppointmentWithCalendar({
+        organizationId: orgId,
+        leadId: opts.leadId,
+        title: "Consultation",
+        scheduledAt,
+        durationMinutes: prefs.durationMinutes,
+        attendeeEmail: lead?.email,
+        attendeeName: lead
+          ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+          : null,
+        description: `Booked via ${opts.channel} follow-up`,
+        timezone: prefs.timezone,
+      });
 
+      const whenLabel = scheduledAt.toLocaleString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: prefs.timezone,
+      });
+
+      if (result.synced) {
+        const reply =
+          opts.channel === "sms"
+            ? `You're booked, ${name}! ${whenLabel} is locked on our calendar. Talk soon — ${brand}.`
+            : `Hi ${name},\n\nYou're confirmed for ${whenLabel}. I've added it to our calendar.\n\nLooking forward to speaking,\n${brand}`;
+        return {
+          reply,
+          bookedAppt: true,
+          calendarSynced: true,
+          scheduledAt: scheduledAt.toISOString(),
+        };
+      }
+
+      const failReply =
+        opts.channel === "sms"
+          ? `${name}, I couldn't lock that time on the calendar just now (${result.syncError || "sync failed"}). Please try again later or reply with another time.`
+          : `Hi ${name},\n\nI wasn't able to save that appointment on the calendar right now${result.syncError ? ` (${result.syncError})` : ""}. Please try again later or reply with another time and I'll book it.\n\nBest,\n${brand}`;
+      return {
+        reply: failReply,
+        bookedAppt: false,
+        calendarSynced: false,
+        scheduledAt: scheduledAt.toISOString(),
+        syncError: result.syncError,
+      };
+    } catch (err: any) {
+      console.warn(`Follow-up calendar book failed: ${err?.message || err}`);
+      const failReply =
+        opts.channel === "sms"
+          ? `${name}, booking failed on our side — please try again later or send another time that works.`
+          : `Hi ${name},\n\nBooking failed on our side just now. Please try again later or reply with another time.\n\nBest,\n${brand}`;
+      return {
+        reply: failReply,
+        bookedAppt: false,
+        calendarSynced: false,
+        syncError: err?.message,
+      };
+    }
+  }
+
+  // No concrete time — check live availability and offer real slots
   try {
-    const lead = await storage.getLead(opts.leadId);
-    await bookAppointmentWithCalendar({
-      organizationId: ws.organizationId,
-      leadId: opts.leadId,
-      title: "Consultation",
-      scheduledAt,
-      attendeeEmail: lead?.email,
-      attendeeName: lead
-        ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
-        : null,
-      description: `Booked via ${opts.channel} follow-up`,
-    });
-    return { bookedAppt: true, scheduledAt: scheduledAt.toISOString() };
+    const prefs = await getCalendarBookingPrefs(orgId);
+    const avail = await getCalendarAvailability({ organizationId: orgId });
+    if (!avail.connected || avail.error) {
+      const failReply =
+        opts.channel === "sms"
+          ? `Thanks ${name}! I'm having trouble reading the calendar right now — reply with a couple of times that work, or try again later.`
+          : `Hi ${name},\n\nThanks for getting back. I'm having trouble reading the calendar right now. Please reply with a couple of times that work, or try again later and I'll lock one in.\n\nBest,\n${brand}`;
+      return {
+        reply: failReply,
+        bookedAppt: false,
+        calendarSynced: false,
+        syncError: avail.error,
+      };
+    }
+
+    const offered = avail.slots.slice(0, prefs.offerCount);
+    if (!offered.length) {
+      const noneReply =
+        opts.channel === "sms"
+          ? `${name}, I don't have open slots in the next ${prefs.daysAhead} days. Reply with a preferred day/time and I'll check again.`
+          : `Hi ${name},\n\nI don't have open slots in the next ${prefs.daysAhead} days on our calendar. Reply with a preferred day or time window and I'll check again.\n\nBest,\n${brand}`;
+      return { reply: noneReply, bookedAppt: false, calendarSynced: true };
+    }
+
+    const slotText = offered.map((s) => s.label).join("; ");
+    const offerReply =
+      opts.channel === "sms"
+        ? `Great, ${name}! Open times: ${slotText}. Reply with the one you want and I'll book it.`
+        : `Hi ${name},\n\nHere are real open times on our calendar:\n\n${offered.map((s) => `• ${s.label}`).join("\n")}\n\nReply with the slot you want and I'll book it right away.\n\nBest,\n${brand}`;
+    return { reply: offerReply, bookedAppt: false, calendarSynced: true };
   } catch (err: any) {
-    console.warn(`Follow-up calendar book failed: ${err?.message || err}`);
-    return { bookedAppt: false };
+    console.warn(`Follow-up availability check failed: ${err?.message || err}`);
+    return {
+      reply: opts.draftReply,
+      bookedAppt: false,
+      calendarSynced: false,
+      syncError: err?.message,
+    };
   }
 }
 
@@ -244,12 +364,14 @@ export async function handleSdrSmsConversation(opts: {
 }): Promise<FollowupReplyResult & { twimlMessage?: string }> {
   const companyName = await loadCompanyName(opts.workspaceId);
   const firstName = (opts.lead.firstName || "").trim();
-  const { intent, reply } = await generateFollowupReply({
+  const generated = await generateFollowupReply({
     channel: "sms",
     firstName,
     companyName,
     inboundText: opts.inboundText,
   });
+  const intent = generated.intent;
+  let reply = generated.reply;
 
   const [enrollment] = await db
     .select()
@@ -297,33 +419,35 @@ export async function handleSdrSmsConversation(opts: {
     });
   }
 
-  // Book on clear agreement
   const afterStatus = (
     await db.select({ status: sdrEnrollments.status }).from(sdrEnrollments).where(eq(sdrEnrollments.id, opts.enrollmentId))
   )[0]?.status as EnrollmentStatus | undefined;
 
+  // Live calendar: book confirmed slots or offer real availability; rewrite reply accordingly
+  const scheduling = await resolveFollowupScheduling({
+    workspaceId: opts.workspaceId,
+    leadId: opts.lead.id,
+    inboundText: opts.inboundText,
+    channel: "sms",
+    intent,
+    firstName,
+    companyName,
+    draftReply: reply,
+  });
+  reply = scheduling.reply;
+
   let booked = false;
-  if (intent === "agree" && afterStatus && stateMachine.canTransition(afterStatus, "booked")) {
+  if (scheduling.bookedAppt && afterStatus && stateMachine.canTransition(afterStatus, "booked")) {
     await stateMachine.transition(opts.enrollmentId, "booked", {
       channel: "sms",
       reason: "lead_agreed_via_sms",
       intent,
+      scheduledAt: scheduling.scheduledAt,
+      calendarSynced: scheduling.calendarSynced,
     });
     booked = true;
-    await maybeBookFollowupAppointment({
-      workspaceId: opts.workspaceId,
-      leadId: opts.lead.id,
-      inboundText: opts.inboundText,
-      channel: "sms",
-    });
-  } else if (intent === "agree") {
-    // Already booked or can't transition — still try to lock a calendar slot if time given
-    await maybeBookFollowupAppointment({
-      workspaceId: opts.workspaceId,
-      leadId: opts.lead.id,
-      inboundText: opts.inboundText,
-      channel: "sms",
-    });
+  } else if (scheduling.bookedAppt) {
+    booked = true;
   } else if (intent === "disagree" && afterStatus && stateMachine.canTransition(afterStatus, "exhausted")) {
     await stateMachine.transition(opts.enrollmentId, "exhausted", {
       channel: "sms",
@@ -373,7 +497,7 @@ export async function handleSdrSmsConversation(opts: {
     console.error("SDR SMS conversational reply failed:", err.message);
   }
 
-  return { intent, replyText: reply, sent, booked, error, twimlMessage: escapeXml(reply) };
+  return { intent, replyText: reply, sent, booked, calendarSynced: scheduling.calendarSynced, error, twimlMessage: escapeXml(reply) };
 }
 
 /**
@@ -390,13 +514,15 @@ export async function handleSdrEmailConversation(opts: {
 }): Promise<FollowupReplyResult> {
   const companyName = await loadCompanyName(opts.workspaceId);
   const firstName = (opts.lead.firstName || "").trim();
-  const { intent, reply } = await generateFollowupReply({
+  const generated = await generateFollowupReply({
     channel: "email",
     firstName,
     companyName,
     inboundText: opts.inboundText,
     inboundSubject: opts.inboundSubject,
   });
+  const intent = generated.intent;
+  let reply = generated.reply;
 
   const [enrollment] = await db
     .select()
@@ -420,27 +546,30 @@ export async function handleSdrEmailConversation(opts: {
     await db.select({ status: sdrEnrollments.status }).from(sdrEnrollments).where(eq(sdrEnrollments.id, opts.enrollmentId))
   )[0]?.status as EnrollmentStatus | undefined;
 
+  const scheduling = await resolveFollowupScheduling({
+    workspaceId: opts.workspaceId,
+    leadId: opts.lead.id,
+    inboundText: `${opts.inboundSubject || ""}\n${opts.inboundText}`,
+    channel: "email",
+    intent,
+    firstName,
+    companyName,
+    draftReply: reply,
+  });
+  reply = scheduling.reply;
+
   let booked = false;
-  if (intent === "agree" && afterStatus && stateMachine.canTransition(afterStatus, "booked")) {
+  if (scheduling.bookedAppt && afterStatus && stateMachine.canTransition(afterStatus, "booked")) {
     await stateMachine.transition(opts.enrollmentId, "booked", {
       channel: "email",
       reason: "lead_agreed_via_email",
       intent,
+      scheduledAt: scheduling.scheduledAt,
+      calendarSynced: scheduling.calendarSynced,
     });
     booked = true;
-    await maybeBookFollowupAppointment({
-      workspaceId: opts.workspaceId,
-      leadId: opts.lead.id,
-      inboundText: `${opts.inboundSubject || ""}\n${opts.inboundText}`,
-      channel: "email",
-    });
-  } else if (intent === "agree") {
-    await maybeBookFollowupAppointment({
-      workspaceId: opts.workspaceId,
-      leadId: opts.lead.id,
-      inboundText: `${opts.inboundSubject || ""}\n${opts.inboundText}`,
-      channel: "email",
-    });
+  } else if (scheduling.bookedAppt) {
+    booked = true;
   } else if (intent === "disagree" && afterStatus && stateMachine.canTransition(afterStatus, "exhausted")) {
     await stateMachine.transition(opts.enrollmentId, "exhausted", {
       channel: "email",
@@ -484,6 +613,9 @@ export async function handleSdrEmailConversation(opts: {
         intent,
         to: opts.fromEmail,
         from: result.from,
+        booked,
+        calendarSynced: scheduling.calendarSynced,
+        scheduledAt: scheduling.scheduledAt,
       },
       loggedAt: new Date(),
     });
@@ -492,7 +624,7 @@ export async function handleSdrEmailConversation(opts: {
     console.error("SDR email conversational reply failed:", err.message);
   }
 
-  return { intent, replyText: reply, sent, booked, error };
+  return { intent, replyText: reply, sent, booked, calendarSynced: scheduling.calendarSynced, error };
 }
 
 /** Suggested conversational templates (use {{first_name}} / {{company_name}}). */

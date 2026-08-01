@@ -5,6 +5,50 @@ import { isCalendarProvider } from "./types.js";
 
 export const DEFAULT_APPOINTMENT_DURATION_MINUTES = 30;
 export const ACTIVE_CALENDAR_SETTING_KEY = "calendar.activeProvider";
+/** Org-level prefs for SDR voice agent availability / booking tools */
+export const CALENDAR_BOOKING_PREFS_KEY = "calendar.bookingPrefs";
+
+export interface CalendarBookingPrefs {
+  daysAhead: number;
+  durationMinutes: number;
+  dayStartHour: number;
+  dayEndHour: number;
+  timezone: string;
+  maxSlots: number;
+  /** How many slots the agent should verbally offer */
+  offerCount: number;
+}
+
+export const DEFAULT_CALENDAR_BOOKING_PREFS: CalendarBookingPrefs = {
+  daysAhead: 5,
+  durationMinutes: 30,
+  dayStartHour: 9,
+  dayEndHour: 17,
+  timezone: "America/New_York",
+  maxSlots: 8,
+  offerCount: 3,
+};
+
+export function normalizeCalendarBookingPrefs(raw: unknown): CalendarBookingPrefs {
+  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const num = (v: unknown, fallback: number, min: number, max: number) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(n)));
+  };
+  return {
+    daysAhead: num(src.daysAhead, DEFAULT_CALENDAR_BOOKING_PREFS.daysAhead, 1, 21),
+    durationMinutes: num(src.durationMinutes, DEFAULT_CALENDAR_BOOKING_PREFS.durationMinutes, 15, 120),
+    dayStartHour: num(src.dayStartHour, DEFAULT_CALENDAR_BOOKING_PREFS.dayStartHour, 0, 23),
+    dayEndHour: num(src.dayEndHour, DEFAULT_CALENDAR_BOOKING_PREFS.dayEndHour, 1, 24),
+    timezone:
+      typeof src.timezone === "string" && src.timezone.trim()
+        ? src.timezone.trim()
+        : DEFAULT_CALENDAR_BOOKING_PREFS.timezone,
+    maxSlots: num(src.maxSlots, DEFAULT_CALENDAR_BOOKING_PREFS.maxSlots, 3, 20),
+    offerCount: num(src.offerCount, DEFAULT_CALENDAR_BOOKING_PREFS.offerCount, 1, 5),
+  };
+}
 
 /** Pick which connected provider to use for sync. */
 export function resolveActiveProvider(opts: {

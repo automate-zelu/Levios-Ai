@@ -7,6 +7,7 @@ import { SMSTemplateEditor } from "../components/sdr/SMSTemplateEditor.jsx";
 import { EmailTemplateEditor } from "../components/sdr/EmailTemplateEditor.jsx";
 import { ThresholdSettings } from "../components/sdr/ThresholdSettings.jsx";
 import { SDRAnalytics } from "../components/sdr/SDRAnalytics.jsx";
+import { CalendarToolsPanel } from "../components/sdr/CalendarToolsPanel.jsx";
 import { TierBadge } from "../components/billing/TierBadge.jsx";
 
 const EMPTY_FORM = {
@@ -109,6 +110,10 @@ export default function SDRConfigPage({ onNavigateBilling }) {
         <PromptEditor
           value={form.systemPrompt}
           onChange={(v) => setForm((f) => ({ ...f, systemPrompt: v }))}
+        />
+        <CalendarToolsPanel
+          systemPrompt={form.systemPrompt}
+          onPromptChange={(v) => setForm((f) => ({ ...f, systemPrompt: v }))}
         />
         <KnowledgeBaseInput
           value={form.knowledgeBase}
