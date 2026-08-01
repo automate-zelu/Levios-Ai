@@ -23,6 +23,7 @@ export default function SDRConfigPage({ onNavigateBilling }) {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [message, setMessage] = useState("");
+  const [calendarContext, setCalendarContext] = useState(null);
 
   useEffect(() => {
     Promise.all([sdrApi.getConfig(), sdrApi.getAnalytics()])
@@ -110,10 +111,12 @@ export default function SDRConfigPage({ onNavigateBilling }) {
         <PromptEditor
           value={form.systemPrompt}
           onChange={(v) => setForm((f) => ({ ...f, systemPrompt: v }))}
+          calendarContext={calendarContext}
         />
         <CalendarToolsPanel
           systemPrompt={form.systemPrompt}
           onPromptChange={(v) => setForm((f) => ({ ...f, systemPrompt: v }))}
+          onCalendarContext={setCalendarContext}
         />
         <KnowledgeBaseInput
           value={form.knowledgeBase}

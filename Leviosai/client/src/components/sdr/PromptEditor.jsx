@@ -1,34 +1,82 @@
 import { COLORS, S } from "../../theme.js";
-import { CALENDAR_TOOL_CHIPS } from "../../lib/calendarPrompt.js";
+import {
+  CALENDAR_TOOL_CHIPS,
+  appendToolSnippet,
+  hasCalendarPromptBlock,
+  injectCalendarPromptBlock,
+} from "../../lib/calendarPrompt.js";
 
-export function PromptEditor({ value, onChange }) {
+/**
+ * AI system prompt editor with clickable calendar-tool chips
+ * (same interaction model as SMS @variable chips).
+ */
+export function PromptEditor({ value, onChange, calendarContext = null }) {
+  const toolsInPrompt = hasCalendarPromptBlock(value);
+
+  const handleChip = (chip) => {
+    if (chip.id === "full_block") {
+      onChange(
+        injectCalendarPromptBlock(value, {
+          provider: calendarContext?.provider || "google",
+          accountEmail: calendarContext?.accountEmail,
+          prefs: calendarContext?.prefs,
+          timezone: calendarContext?.prefs?.timezone || calendarContext?.timezone,
+        })
+      );
+      return;
+    }
+    if (chip.snippet) {
+      onChange(appendToolSnippet(value, chip.snippet));
+    }
+  };
+
   return (
     <div style={S.card}>
-      <div style={S.cardHeader}>AI System Prompt</div>
-      <p style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 10 }}>
-        Define your AI&apos;s persona, tone, and objectives. Include your company name, product, and how to handle objections.
-        Use the Calendar tools panel below to insert check_availability / book_appointment instructions (same chip pattern as SMS variables).
+      <div style={S.cardHeader}>
+        <span>AI System Prompt</span>
+        {toolsInPrompt && (
+          <span style={{ ...S.badge(COLORS.green), fontSize: 10 }}>Calendar tools enabled</span>
+        )}
+      </div>
+      <p style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+        Define persona, tone, and objections. Click a chip to add calendar booking instructions —
+        live call tools only activate when the prompt includes the calendar tools block.
       </p>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-        {CALENDAR_TOOL_CHIPS.filter((c) => c.id !== "full_block").map((chip) => (
-          <span
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, alignItems: "center" }}>
+        {CALENDAR_TOOL_CHIPS.map((chip) => (
+          <button
             key={chip.id}
-            style={{
-              fontSize: 11,
-              padding: "3px 10px",
-              borderRadius: 20,
-              border: `1px solid ${COLORS.border}`,
-              color: COLORS.textMuted,
-            }}
+            type="button"
             title={chip.hint}
+            onClick={() => handleChip(chip)}
+            style={{
+              ...S.btn(chip.id === "full_block" ? "secondary" : "ghost"),
+              padding: "6px 12px",
+              fontSize: 12,
+              borderRadius: 20,
+              cursor: "pointer",
+            }}
           >
             @{chip.label}
-          </span>
+          </button>
         ))}
-        <span style={{ fontSize: 11, color: COLORS.textDim, alignSelf: "center" }}>
-          → configure in Calendar tools below
-        </span>
       </div>
+      {!toolsInPrompt && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: COLORS.orangeGlow,
+            border: `1px solid ${COLORS.orange}44`,
+            fontSize: 12,
+            color: COLORS.text,
+            lineHeight: 1.45,
+          }}
+        >
+          Calendar tools are off until you click <strong>@Full calendar tools block</strong> (or enable them in the panel below), then save configuration.
+        </div>
+      )}
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
