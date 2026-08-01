@@ -12,7 +12,6 @@ import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
 import LeadDetailPage from "./pages/LeadDetailPage.jsx";
-// import CalendarConnections from "./components/calendar/CalendarConnections.jsx"; // paused — calendar UI out of scope
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
 
@@ -3403,7 +3402,7 @@ function SettingsPage() {
   const location = useLocation();
   const initialTab = new URLSearchParams(location.search).get("tab") || "Company";
   const [activeTab, setActiveTab] = useState(
-    ["Company", "Team", /* "Calendars", */ "Notifications", "AI Preferences", "Security"].includes(initialTab)
+    ["Company", "Team", "Notifications", "AI Preferences", "Security"].includes(initialTab)
       ? initialTab
       : "Company"
   );
@@ -3420,22 +3419,11 @@ function SettingsPage() {
         <div><h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Settings</h2><p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>Manage your workspace, team, and preferences</p></div>
         <div className="page-header-actions">
           {saved && <span style={{ fontSize: 12, color: COLORS.green, fontWeight: 600 }}>✓ Saved</span>}
-          {/* {activeTab !== "Calendars" && ( */}
-            <button style={S.btn("primary")} onClick={handleSave}>Save Changes</button>
-          {/* )} */}
+          <button style={S.btn("primary")} onClick={handleSave}>Save Changes</button>
         </div>
       </div>
 
-      <TabBar tabs={["Company", "Team", /* "Calendars", */ "Notifications", "AI Preferences", "Security"]} active={activeTab} onChange={setActiveTab} />
-
-      {/* Calendar / Meet booking — paused (not in SOW/plan scope)
-      {activeTab === "Calendars" && (
-        <div style={S.card}>
-          <div style={S.cardHeader}>Google Calendar</div>
-          <CalendarConnections colors={COLORS} styles={S} />
-        </div>
-      )}
-      */}
+      <TabBar tabs={["Company", "Team", "Notifications", "AI Preferences", "Security"]} active={activeTab} onChange={setActiveTab} />
 
       {activeTab === "Company" && (
         <>

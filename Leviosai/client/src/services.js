@@ -74,16 +74,19 @@ export const INTEGRATION_CATEGORIES = {
       { id: "close", name: "Close.com", icon: "📞", description: "Inside sales CRM", authType: "api_key", fields: [{ key: "apiKey", label: "API Key", type: "password" }] },
     ],
   },
-  // Calendar / Meet / scheduling platforms — paused (not in SOW/plan scope)
-  // calendar: {
-  //   label: "Calendars",
-  //   items: [
-  //     { id: "google_calendar", name: "Google Calendar", icon: "📅", description: "Google Workspace calendar", authType: "oauth", oauthUrl: "/api/calendar/oauth/google/start" },
-  //     { id: "calendly", name: "Calendly", icon: "🗓️", description: "Scheduling automation", authType: "api_key", fields: [{ key: "apiKey", label: "Personal Access Token", type: "password" }] },
-  //     { id: "outlook", name: "Microsoft Outlook", icon: "📧", description: "Microsoft 365 calendar", authType: "oauth", oauthUrl: "/api/calendar/oauth/outlook/start" },
-  //     { id: "calcom", name: "Cal.com", icon: "⏰", description: "Open-source scheduling", authType: "api_key", fields: [{ key: "apiKey", label: "API Key", type: "password" }] },
-  //   ],
-  // },
+  calendar: {
+    label: "Calendars",
+    items: [
+      {
+        id: "google_calendar",
+        name: "Google Calendar",
+        icon: "📅",
+        description: "Check availability and book appointments on calls",
+        authType: "oauth",
+        oauthUrl: "/api/calendar/oauth/google/start",
+      },
+    ],
+  },
   automation: {
     label: "Automation & Webhooks",
     items: [

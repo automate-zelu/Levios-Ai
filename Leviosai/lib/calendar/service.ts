@@ -13,6 +13,8 @@ import {
 import {
   createProviderEvent,
   listProviderCalendars,
+  queryProviderFreeBusy,
+  computeOpenSlots,
   refreshAccessToken,
 } from "./providers.js";
 import {
@@ -27,6 +29,29 @@ import type {
   CalendarProvider,
 } from "./types.js";
 
+export interface AvailabilityQuery {
+  organizationId: number;
+  daysAhead?: number;
+  durationMinutes?: number;
+  maxSlots?: number;
+  timezone?: string;
+  timeMin?: Date;
+  timeMax?: Date;
+}
+
+export interface AvailabilitySlotDto {
+  start: string;
+  end: string;
+  label: string;
+}
+
+export interface AvailabilityResult {
+  provider: CalendarProvider | null;
+  timezone: string;
+  slots: AvailabilitySlotDto[];
+  connected: boolean;
+  error?: string;
+}
 async function readOrgSettings(organizationId: number): Promise<Record<string, any>> {
   try {
     const result: any = await db.execute(sql`
@@ -123,6 +148,103 @@ export async function listCalendarsForOrg(
 
   const calendars = await listProviderCalendars(useProvider, tokens.accessToken);
   return { provider: useProvider, calendars };
+}
+
+function formatSlotLabel(start: Date, end: Date, timeZone: string): string {
+  try {
+    const opts: Intl.DateTimeFormatOptions = {
+      timeZone,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    };
+    const a = new Intl.DateTimeFormat("en-US", opts).format(start);
+    const b = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(end);
+    return `${a} – ${b}`;
+  } catch {
+    return `${start.toISOString()} – ${end.toISOString()}`;
+  }
+}
+
+/**
+ * Return open appointment slots from the org's active calendar (Google FreeBusy).
+ */
+export async function getCalendarAvailability(
+  query: AvailabilityQuery
+): Promise<AvailabilityResult> {
+  const timezone = query.timezone || "America/New_York";
+  const status = await getCalendarStatus(query.organizationId);
+  const provider = status.activeProvider;
+
+  if (!provider) {
+    return {
+      provider: null,
+      timezone,
+      slots: [],
+      connected: false,
+      error: "No calendar connected",
+    };
+  }
+
+  const tokens = await getValidAccessToken(query.organizationId, provider);
+  if (!tokens) {
+    return {
+      provider,
+      timezone,
+      slots: [],
+      connected: false,
+      error: `${provider} calendar is not connected`,
+    };
+  }
+
+  const daysAhead = Math.min(21, Math.max(1, query.daysAhead ?? 5));
+  const durationMinutes = query.durationMinutes ?? 30;
+  const timeMin = query.timeMin || new Date(Date.now() + 60 * 60_000);
+  const timeMax =
+    query.timeMax || new Date(timeMin.getTime() + daysAhead * 24 * 60 * 60_000);
+
+  try {
+    const busy = await queryProviderFreeBusy(
+      provider,
+      tokens.accessToken,
+      tokens.calendarId,
+      timeMin,
+      timeMax
+    );
+    const open = computeOpenSlots({
+      timeMin,
+      timeMax,
+      busy,
+      durationMinutes,
+      maxSlots: query.maxSlots ?? 8,
+      timezone,
+    });
+
+    return {
+      provider,
+      timezone,
+      connected: true,
+      slots: open.map((s) => ({
+        start: s.start.toISOString(),
+        end: s.end.toISOString(),
+        label: formatSlotLabel(s.start, s.end, timezone),
+      })),
+    };
+  } catch (err: any) {
+    return {
+      provider,
+      timezone,
+      connected: true,
+      slots: [],
+      error: err?.message || "Availability check failed",
+    };
+  }
 }
 
 export async function bookAppointmentWithCalendar(

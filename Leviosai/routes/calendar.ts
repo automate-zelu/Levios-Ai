@@ -24,6 +24,7 @@ import {
   getCalendarStatus,
   listCalendarsForOrg,
   setActiveCalendarProvider,
+  getCalendarAvailability,
 } from "../lib/calendar/service.js";
 import type { CalendarProvider } from "../lib/calendar/types.js";
 
@@ -104,12 +105,12 @@ router.get("/api/calendar/oauth/:provider/callback", async (req: Request, res: R
   }
   if (oauthError) {
     return res.redirect(
-      frontendCalendarReturnUrl({ calendar: "error", reason: oauthError, tab: "Calendars" })
+      frontendCalendarReturnUrl({ calendar: "error", reason: oauthError })
     );
   }
   if (!code || !state) {
     return res.redirect(
-      frontendCalendarReturnUrl({ calendar: "error", reason: "missing_code", tab: "Calendars" })
+      frontendCalendarReturnUrl({ calendar: "error", reason: "missing_code" })
     );
   }
 
@@ -140,7 +141,6 @@ router.get("/api/calendar/oauth/:provider/callback", async (req: Request, res: R
       frontendCalendarReturnUrl({
         calendar: "connected",
         provider,
-        tab: "Calendars",
       })
     );
   } catch (err: any) {
@@ -149,7 +149,6 @@ router.get("/api/calendar/oauth/:provider/callback", async (req: Request, res: R
       frontendCalendarReturnUrl({
         calendar: "error",
         reason: encodeURIComponent(err.message || "oauth_failed"),
-        tab: "Calendars",
       })
     );
   }
@@ -242,6 +241,32 @@ router.patch("/api/calendar/calendars", requireAuth, async (req: Request, res: R
       provider: updated.provider,
       calendarId: updated.calendarId,
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/calendar/availability  { daysAhead?, durationMinutes?, timezone?, maxSlots? }
+router.post("/api/calendar/availability", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const orgId = req.organizationId;
+    if (!orgId) return res.status(400).json({ error: "No organization" });
+
+    const result = await getCalendarAvailability({
+      organizationId: orgId,
+      daysAhead: req.body?.daysAhead != null ? Number(req.body.daysAhead) : undefined,
+      durationMinutes:
+        req.body?.durationMinutes != null ? Number(req.body.durationMinutes) : undefined,
+      maxSlots: req.body?.maxSlots != null ? Number(req.body.maxSlots) : undefined,
+      timezone: typeof req.body?.timezone === "string" ? req.body.timezone : undefined,
+      timeMin: req.body?.timeMin ? new Date(req.body.timeMin) : undefined,
+      timeMax: req.body?.timeMax ? new Date(req.body.timeMax) : undefined,
+    });
+
+    if (result.error && !result.connected) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

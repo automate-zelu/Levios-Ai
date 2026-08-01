@@ -186,6 +186,8 @@ export const calendarApi = {
       method: "PATCH",
       body: JSON.stringify({ provider, calendarId }),
     }),
+  checkAvailability: (body = {}) =>
+    request("/api/calendar/availability", { method: "POST", body: JSON.stringify(body) }),
 };
 
 // Gmail BYOT — send SDR follow-ups from the customer's Gmail (n8n-style OAuth)

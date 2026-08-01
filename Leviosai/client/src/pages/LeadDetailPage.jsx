@@ -43,7 +43,7 @@ export default function LeadDetailPage({ onNavigate }) {
   const [error, setError] = useState("");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [busy, setBusy] = useState("");
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatChannel, setChatChannel] = useState(null); // null | "sms" | "email"
 
   const rawTab = searchParams.get("tab") || "overview";
   const tab = rawTab === "sequences" ? "sequences" : "overview";
@@ -222,7 +222,7 @@ export default function LeadDetailPage({ onNavigate }) {
               messages={sortedMessages}
               smsCount={smsCount}
               emailCount={emailCount}
-              onOpenChat={() => setChatOpen(true)}
+              onOpenChat={(channel) => setChatChannel(channel)}
               onOpenSequences={() => setTab("sequences")}
             />
           )}
@@ -233,11 +233,12 @@ export default function LeadDetailPage({ onNavigate }) {
         </div>
       </div>
 
-      {chatOpen && (
+      {chatChannel && (
         <ConversationModal
+          channel={chatChannel}
           leadName={lead.name}
-          messages={sortedMessages}
-          onClose={() => setChatOpen(false)}
+          messages={sortedMessages.filter((m) => m.channel === chatChannel)}
+          onClose={() => setChatChannel(null)}
           onOpenInbox={openInbox}
         />
       )}
@@ -245,8 +246,92 @@ export default function LeadDetailPage({ onNavigate }) {
   );
 }
 
+function ChannelPreview({ channel, messages, onOpen }) {
+  const preview = messages.slice(-3);
+  const label = channel === "sms" ? "SMS" : "Email";
+  const emptyHint =
+    channel === "sms"
+      ? "No SMS yet. Send a text to start this thread."
+      : "No emails yet. Send an email to start this thread.";
+
+  return (
+    <div style={{ ...S.card, marginBottom: 0, flex: 1, minWidth: 260 }}>
+      <div style={{ ...S.cardHeader, marginBottom: 12 }}>
+        <span>{channel === "sms" ? "💬 SMS" : "✉️ Email"}</span>
+        <button
+          type="button"
+          style={{ ...S.btn("secondary"), padding: "8px 14px", fontSize: 12 }}
+          onClick={onOpen}
+        >
+          Open {label}
+        </button>
+      </div>
+
+      {messages.length === 0 ? (
+        <div style={{ padding: "24px 8px", textAlign: "center", color: COLORS.textMuted, fontSize: 13 }}>
+          {emptyHint}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onOpen}
+          style={{
+            width: "100%",
+            textAlign: "left",
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 12,
+            background: COLORS.bg,
+            padding: "14px 16px",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            color: "inherit",
+          }}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            {preview.map((m) => {
+              const inbound = m.direction === "inbound";
+              const isEmail = channel === "email";
+              const parsed = isEmail ? parseEmailContent(m.content) : null;
+              const text = isEmail
+                ? `${parsed.subject || "(no subject)"} — ${(parsed.body || "").replace(/\s+/g, " ").slice(0, 70)}`
+                : (m.content || "").slice(0, 90);
+              return (
+                <div
+                  key={m.id}
+                  style={{ display: "flex", justifyContent: inbound ? "flex-start" : "flex-end" }}
+                >
+                  <div
+                    style={{
+                      maxWidth: "82%",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      background: inbound ? COLORS.surfaceAlt : `${COLORS.orange}18`,
+                      border: `1px solid ${inbound ? COLORS.border : `${COLORS.orange}40`}`,
+                    }}
+                  >
+                    <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 4 }}>
+                      {inbound ? "Lead" : "You"}
+                      {m.createdAt ? ` · ${new Date(m.createdAt).toLocaleString()}` : ""}
+                    </div>
+                    <div style={{ fontSize: 13, lineHeight: 1.4, color: COLORS.text }}>{text}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 12, fontSize: 12, color: COLORS.orangeLight, fontWeight: 600 }}>
+            View full {label.toLowerCase()} thread →
+          </div>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences }) {
-  const preview = messages.slice(-4);
+  const smsMessages = useMemo(() => messages.filter((m) => m.channel === "sms"), [messages]);
+  const emailMessages = useMemo(() => messages.filter((m) => m.channel === "email"), [messages]);
+
   const scoreHint =
     lead.score > 75
       ? "High intent — prioritize a live call within 48 hours."
@@ -276,73 +361,9 @@ function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpe
         </div>
       )}
 
-      <div style={{ ...S.card, marginBottom: 16 }}>
-        <div style={{ ...S.cardHeader, marginBottom: 12 }}>
-          <span>Conversation</span>
-          <button type="button" style={{ ...S.btn("secondary"), padding: "8px 14px", fontSize: 12 }} onClick={onOpenChat}>
-            Open chat
-          </button>
-        </div>
-
-        {messages.length === 0 ? (
-          <div style={{ padding: "28px 12px", textAlign: "center", color: COLORS.textMuted, fontSize: 13 }}>
-            No messages yet. Start a call, SMS, or email to begin the thread.
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={onOpenChat}
-            style={{
-              width: "100%",
-              textAlign: "left",
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 12,
-              background: COLORS.bg,
-              padding: "16px 18px",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              color: "inherit",
-            }}
-          >
-            <div style={{ display: "grid", gap: 10 }}>
-              {preview.map((m) => {
-                const inbound = m.direction === "inbound";
-                const isEmail = m.channel === "email";
-                const parsed = isEmail ? parseEmailContent(m.content) : null;
-                const text = isEmail
-                  ? `${parsed.subject || "(no subject)"} — ${(parsed.body || "").replace(/\s+/g, " ").slice(0, 80)}`
-                  : (m.content || "").slice(0, 100);
-                return (
-                  <div
-                    key={m.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: inbound ? "flex-start" : "flex-end",
-                    }}
-                  >
-                    <div
-                      style={{
-                        maxWidth: "78%",
-                        padding: "10px 12px",
-                        borderRadius: 12,
-                        background: inbound ? COLORS.surfaceAlt : `${COLORS.orange}18`,
-                        border: `1px solid ${inbound ? COLORS.border : `${COLORS.orange}40`}`,
-                      }}
-                    >
-                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 4 }}>
-                        {isEmail ? "Email" : "SMS"} · {inbound ? "Lead" : "You"}
-                      </div>
-                      <div style={{ fontSize: 13, lineHeight: 1.4, color: COLORS.text }}>{text}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ marginTop: 14, fontSize: 12, color: COLORS.orangeLight, fontWeight: 600 }}>
-              View full conversation →
-            </div>
-          </button>
-        )}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+        <ChannelPreview channel="sms" messages={smsMessages} onOpen={() => onOpenChat("sms")} />
+        <ChannelPreview channel="email" messages={emailMessages} onOpen={() => onOpenChat("email")} />
       </div>
 
       <div style={{ ...S.card, marginBottom: 0 }}>
@@ -355,19 +376,21 @@ function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpe
   );
 }
 
-function ConversationModal({ leadName, messages, onClose, onOpenInbox }) {
+function ConversationModal({ channel, leadName, messages, onClose, onOpenInbox }) {
   const scrollerRef = useRef(null);
+  const isSms = channel === "sms";
+  const title = isSms ? "SMS conversation" : "Email conversation";
 
   useEffect(() => {
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, channel]);
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Conversation with ${leadName}`}
+      aria-label={`${title} with ${leadName}`}
       style={{
         position: "fixed",
         inset: 0,
@@ -408,16 +431,17 @@ function ConversationModal({ leadName, messages, onClose, onOpenInbox }) {
         >
           <div>
             <div style={{ fontSize: 11, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
-              Conversation
+              {isSms ? "💬 SMS only" : "✉️ Email only"}
             </div>
             <div style={{ fontSize: 18, fontWeight: 700 }}>{leadName}</div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 12 }} onClick={() => onOpenInbox("sms")}>
-              SMS Inbox
-            </button>
-            <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 12 }} onClick={() => onOpenInbox("email")}>
-              Email Inbox
+            <button
+              type="button"
+              style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 12 }}
+              onClick={() => onOpenInbox(channel)}
+            >
+              {isSms ? "SMS Inbox" : "Email Inbox"}
             </button>
             <button type="button" style={{ ...S.btn("ghost"), padding: "8px 12px" }} onClick={onClose} aria-label="Close">
               ✕
@@ -437,7 +461,7 @@ function ConversationModal({ leadName, messages, onClose, onOpenInbox }) {
         >
           {messages.length === 0 ? (
             <div style={{ textAlign: "center", color: COLORS.textMuted, padding: 48, fontSize: 13 }}>
-              No messages in this thread yet.
+              {isSms ? "No SMS in this thread yet." : "No emails in this thread yet."}
             </div>
           ) : (
             messages.map((m) => <ChatBubble key={m.id} msg={m} />)

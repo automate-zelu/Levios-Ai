@@ -19,7 +19,7 @@
 
 import type WebSocket from "ws";
 import { db } from "../db.js";
-import { sdrCallSessions, sdrConfigs } from "../schema.js";
+import { sdrCallSessions, sdrConfigs, workspaces } from "../schema.js";
 import { eq } from "drizzle-orm";
 import { DeepgramSTTClient } from "./deepgram-client.js";
 import { ElevenLabsClient } from "./elevenlabs-client.js";
@@ -112,6 +112,11 @@ export class AudioPipeline {
       return;
     }
 
+    const [wsRow] = await db
+      .select({ organizationId: workspaces.organizationId })
+      .from(workspaces)
+      .where(eq(workspaces.id, session.workspaceId));
+
     console.log(`📞 Pipeline starting for session ${sessionId} (workspace ${session.workspaceId})`);
 
     // Resume after Twilio <Say> fallback reconnect — restore transcript, skip re-greeting.
@@ -131,7 +136,13 @@ export class AudioPipeline {
       console.log(`📞 Resuming pipeline after Twilio <Say> fallback for session ${sessionId}`);
     }
 
-    await this.agent.init(sessionId, config.systemPrompt, session.workspaceId);
+    await this.agent.init({
+      sessionId,
+      systemPrompt: config.systemPrompt || "",
+      workspaceId: session.workspaceId,
+      organizationId: wsRow?.organizationId || 0,
+      leadId: session.leadId ?? null,
+    });
     console.log(`🤖 LangChain agent initialized for session ${sessionId}`);
 
     console.log(`🎙️  Deepgram connecting for session ${sessionId}...`);
@@ -449,12 +460,18 @@ export class AudioPipeline {
         if (!Number.isNaN(parsed.getTime())) bookedScheduledAt = parsed;
       }
 
+      // Mid-call tool booking wins over post-call parse
+      const mid = this.agent.getMidCallBooking?.();
+      if (mid?.scheduledAt) {
+        bookedScheduledAt = mid.scheduledAt;
+      }
+
       await db
         .update(sdrCallSessions)
         .set({
           transcript: fullTranscript,
           aiSummary: summary,
-          outcome,
+          outcome: mid ? "booked" : outcome,
           bookedScheduledAt,
           status: "completed",
           endedAt: new Date(),

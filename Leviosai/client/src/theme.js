@@ -34,6 +34,7 @@ export const S = {
     ...(v === "teal" ? { background: COLORS.teal, color: "#fff" } : {}),
   }),
   input: { width: "100%", padding: "10px 14px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: COLORS.surfaceAlt, color: COLORS.text, fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" },
+  select: { padding: "10px 14px", borderRadius: 8, border: `1px solid ${COLORS.border}`, background: COLORS.surfaceAlt, color: COLORS.text, fontSize: 13, fontFamily: "inherit", outline: "none", width: "100%" },
   table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
   th: { textAlign: "left", padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 },
   td: { padding: "12px 14px", borderBottom: `1px solid ${COLORS.border}22` },

@@ -21,6 +21,7 @@ import {
   leads,
   sdrLogs,
   leadMessages,
+  appointments,
 } from "../lib/schema.js";
 import {
   stateMachine,
@@ -36,7 +37,7 @@ import { decrypt } from "../lib/crypto.js";
 import { requireAuth } from "./auth.js";
 import { workspaceScope } from "../middleware/workspaceScope.js";
 import { validateTwilioCallSession } from "../middleware/twilioSignature.js";
-import { eq, and, desc, asc, count, sql } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, gte, lte } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { bookAppointmentWithCalendar } from "../lib/calendar/service.js";
 import { parseScheduledAt } from "../lib/calendar/booking-helpers.js";
@@ -236,22 +237,42 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
                 .from(workspaces)
                 .where(eq(workspaces.id, enrollment.workspaceId));
               if (ws?.organizationId) {
-                const [lead] = await db.select().from(leads).where(eq(leads.id, session.leadId));
-                const result = await bookAppointmentWithCalendar({
-                  organizationId: ws.organizationId,
-                  leadId: session.leadId,
-                  title: "Consultation",
-                  scheduledAt,
-                  attendeeEmail: lead?.email,
-                  attendeeName: lead
-                    ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
-                    : null,
-                  description: updatedSession?.aiSummary || undefined,
-                });
-                if (!result.synced && result.syncError) {
-                  console.warn(
-                    `Calendar sync skipped/failed for session ${sessionId}: ${result.syncError}`
+                const windowStart = new Date(scheduledAt.getTime() - 60_000);
+                const windowEnd = new Date(scheduledAt.getTime() + 60_000);
+                const [dup] = await db
+                  .select({ id: appointments.id })
+                  .from(appointments)
+                  .where(
+                    and(
+                      eq(appointments.leadId, session.leadId),
+                      gte(appointments.scheduledAt, windowStart),
+                      lte(appointments.scheduledAt, windowEnd)
+                    )
+                  )
+                  .limit(1);
+
+                if (dup) {
+                  console.log(
+                    `Calendar booking skipped for session ${sessionId} — appointment ${dup.id} already exists`
                   );
+                } else {
+                  const [lead] = await db.select().from(leads).where(eq(leads.id, session.leadId));
+                  const result = await bookAppointmentWithCalendar({
+                    organizationId: ws.organizationId,
+                    leadId: session.leadId,
+                    title: "Consultation",
+                    scheduledAt,
+                    attendeeEmail: lead?.email,
+                    attendeeName: lead
+                      ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+                      : null,
+                    description: updatedSession?.aiSummary || undefined,
+                  });
+                  if (!result.synced && result.syncError) {
+                    console.warn(
+                      `Calendar sync skipped/failed for session ${sessionId}: ${result.syncError}`
+                    );
+                  }
                 }
               }
             }

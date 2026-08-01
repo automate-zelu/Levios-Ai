@@ -12,6 +12,7 @@ import { stateMachine } from "./sdr-state-machine.js";
 import { getClientForWorkspace } from "./twilio-subaccount.js";
 import { sendEmailViaGmail } from "./gmail/send.js";
 import { storage } from "./storage.js";
+import { bookAppointmentWithCalendar } from "./calendar/service.js";
 
 export type FollowupIntent = "agree" | "disagree" | "question" | "other";
 
@@ -79,6 +80,81 @@ function heuristicReply(intent: FollowupIntent, firstName: string, company: stri
       return `Hi ${name},\n\nThanks for the note — happy to answer. Share whatever is on your mind (or a few times that work) and I'll follow up right away.\n\nBest,\n${brand}`;
     default:
       return `Hi ${name},\n\nThanks for writing back. Would a brief 10-minute call this week be useful, or is there something specific I can help with over email?\n\nBest,\n${brand}`;
+  }
+}
+
+/** Pull an ISO datetime from free text when the lead names a slot. */
+export async function extractScheduledAtFromText(text: string): Promise<Date | null> {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  // Direct ISO / obvious datetime
+  const iso = raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  if (iso) {
+    const d = new Date(iso[0]);
+    if (!Number.isNaN(d.getTime()) && d.getTime() > Date.now() - 60_000) return d;
+  }
+
+  if (!process.env.OPENAI_API_KEY) return null;
+
+  try {
+    const llm = new ChatOpenAI({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      openAIApiKey: process.env.OPENAI_API_KEY,
+    });
+    const schema = z.object({
+      scheduledAt: z
+        .string()
+        .nullable()
+        .describe("ISO-8601 UTC datetime if a specific future meeting time was stated, else null"),
+    });
+    const structured = llm.withStructuredOutput(schema);
+    const result = await structured.invoke(
+      `Extract a specific future appointment datetime from this message if clearly stated. ` +
+        `Today is ${new Date().toISOString()}. Return null if only vague interest with no time.\n\nMessage:\n${raw}`
+    );
+    if (!result.scheduledAt) return null;
+    const d = new Date(result.scheduledAt);
+    if (Number.isNaN(d.getTime()) || d.getTime() < Date.now() - 60_000) return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+async function maybeBookFollowupAppointment(opts: {
+  workspaceId: string;
+  leadId: number;
+  inboundText: string;
+  channel: "sms" | "email";
+}): Promise<{ bookedAppt: boolean; scheduledAt?: string }> {
+  const scheduledAt = await extractScheduledAtFromText(opts.inboundText);
+  if (!scheduledAt) return { bookedAppt: false };
+
+  const [ws] = await db
+    .select({ organizationId: workspaces.organizationId })
+    .from(workspaces)
+    .where(eq(workspaces.id, opts.workspaceId));
+  if (!ws?.organizationId) return { bookedAppt: false };
+
+  try {
+    const lead = await storage.getLead(opts.leadId);
+    await bookAppointmentWithCalendar({
+      organizationId: ws.organizationId,
+      leadId: opts.leadId,
+      title: "Consultation",
+      scheduledAt,
+      attendeeEmail: lead?.email,
+      attendeeName: lead
+        ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+        : null,
+      description: `Booked via ${opts.channel} follow-up`,
+    });
+    return { bookedAppt: true, scheduledAt: scheduledAt.toISOString() };
+  } catch (err: any) {
+    console.warn(`Follow-up calendar book failed: ${err?.message || err}`);
+    return { bookedAppt: false };
   }
 }
 
@@ -234,6 +310,20 @@ export async function handleSdrSmsConversation(opts: {
       intent,
     });
     booked = true;
+    await maybeBookFollowupAppointment({
+      workspaceId: opts.workspaceId,
+      leadId: opts.lead.id,
+      inboundText: opts.inboundText,
+      channel: "sms",
+    });
+  } else if (intent === "agree") {
+    // Already booked or can't transition — still try to lock a calendar slot if time given
+    await maybeBookFollowupAppointment({
+      workspaceId: opts.workspaceId,
+      leadId: opts.lead.id,
+      inboundText: opts.inboundText,
+      channel: "sms",
+    });
   } else if (intent === "disagree" && afterStatus && stateMachine.canTransition(afterStatus, "exhausted")) {
     await stateMachine.transition(opts.enrollmentId, "exhausted", {
       channel: "sms",
@@ -338,6 +428,19 @@ export async function handleSdrEmailConversation(opts: {
       intent,
     });
     booked = true;
+    await maybeBookFollowupAppointment({
+      workspaceId: opts.workspaceId,
+      leadId: opts.lead.id,
+      inboundText: `${opts.inboundSubject || ""}\n${opts.inboundText}`,
+      channel: "email",
+    });
+  } else if (intent === "agree") {
+    await maybeBookFollowupAppointment({
+      workspaceId: opts.workspaceId,
+      leadId: opts.lead.id,
+      inboundText: `${opts.inboundSubject || ""}\n${opts.inboundText}`,
+      channel: "email",
+    });
   } else if (intent === "disagree" && afterStatus && stateMachine.canTransition(afterStatus, "exhausted")) {
     await stateMachine.transition(opts.enrollmentId, "exhausted", {
       channel: "email",

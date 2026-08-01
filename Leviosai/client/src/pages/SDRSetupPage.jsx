@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
-// Calendar booking UI paused — not in SOW/plan scope (Google Meet / calendar platforms)
-// import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
+import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
 import GmailConnectCard from "../components/sdr/GmailConnectCard.jsx";
 
@@ -463,18 +462,16 @@ export default function SDRSetupPage() {
         <GmailConnectCard />
       </SetupSection>
 
-      {/* Calendar / Google Meet / booking platforms — paused (not in SOW or IMPLEMENTATION_PLAN)
       <SetupSection
-        step="2"
-        title="Calendar bookings"
-        subtitle="Connect Google Calendar so the agent can book appointments when a lead agrees on a call."
+        step="3"
+        title="Calendar (Google)"
+        subtitle="Same place as Twilio and Gmail — connect Google Calendar so the agent can check availability and book appointments."
       >
         <CalendarConnections colors={COLORS} styles={S} />
       </SetupSection>
-      */}
 
       <SetupSection
-        step="3"
+        step="4"
         title="Agent content"
         subtitle="The live call agent is a single-prompt system. Set persona, objections, and KB on SDR Agent; pick the ElevenLabs voice on Voice AI."
       >

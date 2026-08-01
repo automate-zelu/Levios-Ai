@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { calendarApi } from "../../api.js";
+import { calendarApi, sdrApi } from "../../api.js";
+import {
+  hasCalendarPromptBlock,
+  injectCalendarPromptBlock,
+} from "../../lib/calendarPrompt.js";
 
 const PROVIDERS = [
   {
@@ -9,18 +13,11 @@ const PROVIDERS = [
     icon: "📅",
     description: "Sync bookings to Google Workspace / Gmail calendar",
   },
-  // Outlook disabled for now — re-enable when Microsoft OAuth app is ready
-  // {
-  //   id: "outlook",
-  //   integrationId: "outlook",
-  //   name: "Microsoft Outlook",
-  //   icon: "📧",
-  //   description: "Sync bookings to Microsoft 365 / Outlook calendar",
-  // },
 ];
 
 /**
  * Account settings panel — connect Google Calendar and choose the active calendar.
+ * Includes “Use this calendar in AI agent” to inject Vapi-style tool instructions.
  */
 export default function CalendarConnections({ colors, styles: S }) {
   const [status, setStatus] = useState(null);
@@ -29,13 +26,18 @@ export default function CalendarConnections({ colors, styles: S }) {
   const [busy, setBusy] = useState(null);
   const [calendars, setCalendars] = useState([]);
   const [banner, setBanner] = useState(null);
+  const [promptPresent, setPromptPresent] = useState(false);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await calendarApi.status();
+      const [data, cfg] = await Promise.all([
+        calendarApi.status(),
+        sdrApi.getConfig().catch(() => null),
+      ]);
       setStatus(data);
+      setPromptPresent(hasCalendarPromptBlock(cfg?.systemPrompt));
     } catch (err) {
       setError(err.message || "Failed to load calendar status");
     } finally {
@@ -131,6 +133,42 @@ export default function CalendarConnections({ colors, styles: S }) {
     }
   };
 
+  const handleInjectPrompt = async () => {
+    if (!status?.activeProvider) {
+      setError("Connect and activate a calendar first");
+      return;
+    }
+    setBusy("prompt");
+    setError(null);
+    try {
+      const cfg = await sdrApi.getConfig();
+      if (!cfg) {
+        setError("Save your SDR Agent config first, then try again");
+        return;
+      }
+      const conn = connectionFor(status.activeProvider);
+      const nextPrompt = injectCalendarPromptBlock(cfg.systemPrompt, {
+        provider: status.activeProvider,
+        accountEmail: conn?.accountEmail,
+      });
+      await sdrApi.saveConfig({
+        ...cfg,
+        systemPrompt: nextPrompt,
+      });
+      setPromptPresent(true);
+      setBanner({
+        ok: true,
+        text: promptPresent
+          ? "AI agent calendar tools block updated"
+          : "Calendar tools added to AI agent prompt",
+      });
+    } catch (err) {
+      setError(err.message || "Failed to update agent prompt");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (loading && !status) {
     return <div style={{ color: colors.textMuted, fontSize: 13 }}>Loading calendars…</div>;
   }
@@ -161,7 +199,7 @@ export default function CalendarConnections({ colors, styles: S }) {
 
       <p style={{ fontSize: 13, color: colors.textMuted, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
         Click Connect, sign in with Google, and approve calendar access.
-        Bookings will sync to the connected Google Calendar.
+        The voice agent can then check availability and book into this calendar.
       </p>
 
       <div style={{ display: "grid", gap: 12, marginBottom: 20 }}>
@@ -201,7 +239,7 @@ export default function CalendarConnections({ colors, styles: S }) {
                   )}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {conn && !isActive && (
                   <button
                     style={{ ...S.btn("ghost"), padding: "8px 12px", fontSize: 11 }}
@@ -235,7 +273,7 @@ export default function CalendarConnections({ colors, styles: S }) {
       </div>
 
       {status?.activeProvider && (
-        <div style={{ ...S.card, marginTop: 0 }}>
+        <div style={{ ...S.card, marginTop: 0, marginBottom: 16 }}>
           <div style={S.cardHeader}>Calendar used for new bookings</div>
           <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0 }}>
             Active provider: <strong style={{ color: colors.text }}>{status.activeProvider}</strong>
@@ -258,6 +296,40 @@ export default function CalendarConnections({ colors, styles: S }) {
           )}
         </div>
       )}
+
+      <div
+        style={{
+          padding: 16,
+          borderRadius: 10,
+          border: `1px solid ${colors.border}`,
+          background: colors.surfaceAlt || "transparent",
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 650, marginBottom: 6 }}>AI agent calendar tools</div>
+        <p style={{ fontSize: 12, color: colors.textMuted, marginTop: 0, marginBottom: 12, lineHeight: 1.5 }}>
+          Add check_availability and book_appointment instructions to the SDR voice agent prompt
+          (same pattern as a Vapi single-prompt agent with tools).
+        </p>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            style={{ ...S.btn("primary"), padding: "10px 16px", fontSize: 12 }}
+            disabled={!status?.activeProvider || busy === "prompt"}
+            onClick={handleInjectPrompt}
+          >
+            {busy === "prompt"
+              ? "Updating prompt…"
+              : promptPresent
+                ? "Refresh calendar tools in AI prompt"
+                : "Use this calendar in AI agent"}
+          </button>
+          {promptPresent && (
+            <span style={{ fontSize: 12, color: colors.green, fontWeight: 600 }}>
+              ✓ Calendar tools present in prompt
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -229,4 +229,53 @@ describe("M10 wiring present in repo", () => {
     const call = readFileSync(path.join(root, "routes/call.ts"), "utf8");
     assert.match(call, /bookAppointmentWithCalendar/);
   });
+
+  it("wires live calendar tools into the call agent", () => {
+    const agent = readFileSync(path.join(root, "lib/calling/langchain-agent.ts"), "utf8");
+    assert.match(agent, /check_availability/);
+    assert.match(agent, /book_appointment/);
+  });
+
+  it("exposes availability route", () => {
+    const src = readFileSync(path.join(root, "routes/calendar.ts"), "utf8");
+    assert.match(src, /\/api\/calendar\/availability/);
+  });
+});
+
+describe("M10 prompt block + open slots", () => {
+  it("injects calendar tools block idempotently", async () => {
+    const {
+      injectCalendarPromptBlock,
+      hasCalendarPromptBlock,
+      CALENDAR_PROMPT_MARKER,
+    } = await import("../lib/calendar/prompt-block.js");
+    const once = injectCalendarPromptBlock("You are an SDR.");
+    assert.equal(hasCalendarPromptBlock(once), true);
+    assert.match(once, /check_availability/);
+    const twice = injectCalendarPromptBlock(once, { accountEmail: "ops@example.com" });
+    assert.equal(twice.split(CALENDAR_PROMPT_MARKER).length - 1, 1);
+    assert.match(twice, /ops@example\.com/);
+  });
+
+  it("computes open slots around busy intervals", async () => {
+    const { computeOpenSlots } = await import("../lib/calendar/providers.js");
+    const timeMin = new Date("2026-08-03T12:00:00.000Z"); // Mon
+    const timeMax = new Date("2026-08-05T23:00:00.000Z");
+    const busyStart = new Date("2026-08-03T14:00:00.000Z");
+    const busyEnd = new Date("2026-08-03T15:00:00.000Z");
+    const slots = computeOpenSlots({
+      timeMin,
+      timeMax,
+      busy: [{ start: busyStart, end: busyEnd }],
+      durationMinutes: 30,
+      timezone: "UTC",
+      dayStartHour: 9,
+      dayEndHour: 17,
+      maxSlots: 5,
+    });
+    assert.ok(slots.length > 0);
+    for (const s of slots) {
+      assert.ok(!(s.start < busyEnd && s.end > busyStart), "slot overlaps busy");
+    }
+  });
 });
