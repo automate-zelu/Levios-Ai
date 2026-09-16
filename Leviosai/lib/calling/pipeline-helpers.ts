@@ -27,6 +27,28 @@ export const LEAD_TURN_GAP_MS = 1400;
 /** Minimum words in a lead turn before we bother the LLM (skip filler/noise). */
 export const LEAD_TURN_MIN_WORDS = 1;
 
+/**
+ * Whether a REST-batch Deepgram transcript should be emitted to the call agent.
+ * Accept single-word answers ("yes", "hello", "sure") — those are valid turns.
+ * Blank / punctuation-only strings are rejected.
+ */
+export function shouldAcceptRestTranscript(
+  text: string,
+  minWords = LEAD_TURN_MIN_WORDS
+): boolean {
+  const cleaned = (text || "").trim().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return false;
+  return countWords(cleaned) >= minWords;
+}
+
+/**
+ * Hold short/noisy REST fragments across batches so "yes" + "please" become one turn
+ * when consecutive batches each only catch part of the phrase.
+ */
+export function accumulateRestTranscript(existing: string, next: string): string {
+  return mergeUtteranceFragments(existing, next);
+}
+
 export interface LatencySample {
   llmMs: number;
   ttsMs: number;

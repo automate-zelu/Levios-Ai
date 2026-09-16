@@ -28,11 +28,14 @@ import {
   withTimeout,
   mergeUtteranceFragments,
   countWords,
+  shouldAcceptRestTranscript,
+  accumulateRestTranscript,
   PIPELINE_LATENCY_WARN_MS,
   DEEPGRAM_MAX_RECONNECTS,
   LLM_RESPONSE_TIMEOUT_MS,
   TTS_TIMEOUT_MS,
   LEAD_TURN_GAP_MS,
+  LEAD_TURN_MIN_WORDS,
   transcriptHasLeadSpeech,
 } from "../lib/calling/pipeline-helpers.js";
 
@@ -153,6 +156,44 @@ describe("M2 pipeline helpers", () => {
       "could you tell me more"
     );
     assert.equal(countWords("could you tell me"), 4);
+  });
+
+  it("accepts single-word REST transcripts like yes/hello (dialogue regression)", () => {
+    assert.equal(LEAD_TURN_MIN_WORDS, 1);
+    assert.equal(shouldAcceptRestTranscript("yes"), true);
+    assert.equal(shouldAcceptRestTranscript("Hello"), true);
+    assert.equal(shouldAcceptRestTranscript("sure,"), true);
+    assert.equal(shouldAcceptRestTranscript("yes please"), true);
+    assert.equal(shouldAcceptRestTranscript("   "), false);
+    assert.equal(shouldAcceptRestTranscript("???"), false);
+    assert.equal(shouldAcceptRestTranscript(""), false);
+  });
+
+  it("accumulates short REST fragments across batches into one lead turn", () => {
+    const held = accumulateRestTranscript("", "yes");
+    assert.equal(held, "yes");
+    assert.equal(shouldAcceptRestTranscript(held), true);
+
+    const merged = accumulateRestTranscript("yes", "please go ahead");
+    assert.equal(merged, "yes please go ahead");
+    assert.equal(shouldAcceptRestTranscript(merged), true);
+
+    // Revision: longer batch supersedes shorter prefix
+    assert.equal(
+      accumulateRestTranscript("could you", "could you tell me more"),
+      "could you tell me more"
+    );
+  });
+
+  it("models the lead-speak → AI-reply acceptance gate used on calls", () => {
+    // Simulate what the pipeline does after REST STT emits text
+    const turns = ["yes", "hello", "yes please", "tell me more about pricing"];
+    for (const turn of turns) {
+      assert.ok(
+        shouldAcceptRestTranscript(turn) && countWords(turn) >= LEAD_TURN_MIN_WORDS,
+        `expected lead turn to reach the LLM: "${turn}"`
+      );
+    }
   });
 
   it("measureLatency flags over-budget totals", () => {

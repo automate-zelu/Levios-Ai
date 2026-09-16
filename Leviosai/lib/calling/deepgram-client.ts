@@ -12,6 +12,9 @@ import {
   DEEPGRAM_MAX_RECONNECTS,
   DEEPGRAM_RECONNECT_DELAY_MS,
   shouldReconnectDeepgram,
+  shouldAcceptRestTranscript,
+  accumulateRestTranscript,
+  LEAD_TURN_MIN_WORDS,
 } from "./pipeline-helpers.js";
 
 // Silence Deepgram should see before declaring end-of-utterance (~1.4s).
@@ -92,6 +95,7 @@ export class DeepgramSTTClient {
   private restMode = false;
   private restBuffer: Buffer[] = [];
   private restTimer: ReturnType<typeof setInterval> | null = null;
+  private restPendingText = "";
   private apiKey = "";
 
   private muted = false;
@@ -293,6 +297,7 @@ export class DeepgramSTTClient {
     this.isOpen = false;
     this.audioQueue = [];
     this.restBuffer = [];
+    this.restPendingText = "";
     this.pendingUtterance = "";
     if (this.restTimer) { clearInterval(this.restTimer); this.restTimer = null; }
     if (this.connection) {
@@ -303,8 +308,8 @@ export class DeepgramSTTClient {
 
   private startRestLoop(): void {
     if (this.restTimer) return;
-    // Longer batch window so REST mode also waits for fuller phrases
-    this.restTimer = setInterval(() => this.flushRestBuffer(), 4500);
+    // Snappier than 4.5s so short answers still feel conversational in REST fallback
+    this.restTimer = setInterval(() => this.flushRestBuffer(), 2500);
   }
 
   private async flushRestBuffer(): Promise<void> {
@@ -318,30 +323,41 @@ export class DeepgramSTTClient {
       try {
         const wav = pcm16ToWav(raw, this.sampleRate);
         const transcript = await this.transcribeWav(wav);
-        if (transcript && this.onTranscriptCallback) this.onTranscriptCallback(transcript);
+        this.emitRestTranscript(transcript);
       } catch (err: any) {
         console.error("🎙️  Deepgram REST fetch error:", err.message);
       }
       return;
     }
 
-    const mulaw  = raw;
+    const mulaw = raw;
 
-    // ~0.75s of audio at 8kHz µ-law before bothering REST
-    if (mulaw.length < 6000 || !hasVoice(mulaw)) return;
+    // ~0.5s of audio at 8kHz µ-law before bothering REST
+    if (mulaw.length < 4000 || !hasVoice(mulaw)) return;
 
     try {
       const wav = mulawToWav(mulaw);
       const transcript = await this.transcribeWav(wav);
-      if (transcript && transcript.split(/\s+/).length >= 2 && this.onTranscriptCallback) {
-        console.log(`🎙️  Transcript (REST): "${transcript}"`);
-        this.onTranscriptCallback(transcript);
-      } else if (transcript) {
-        console.log(`🎙️  Transcript too short, skipping: "${transcript}"`);
-      }
+      this.emitRestTranscript(transcript);
     } catch (err: any) {
       console.error("🎙️  Deepgram REST fetch error:", err.message);
     }
+  }
+
+  private emitRestTranscript(transcript: string): void {
+    if (!transcript || !this.onTranscriptCallback) return;
+
+    this.restPendingText = accumulateRestTranscript(this.restPendingText, transcript);
+
+    if (!shouldAcceptRestTranscript(this.restPendingText, LEAD_TURN_MIN_WORDS)) {
+      console.log(`🎙️  Transcript held (too short): "${this.restPendingText || transcript}"`);
+      return;
+    }
+
+    const text = this.restPendingText.trim();
+    this.restPendingText = "";
+    console.log(`🎙️  Transcript (REST): "${text}"`);
+    this.onTranscriptCallback(text);
   }
 
   private async transcribeWav(wav: Buffer): Promise<string> {

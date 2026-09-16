@@ -245,7 +245,12 @@ export class AudioPipeline {
             console.log(`🤖 Greeting: "${greeting.substring(0, 100)}"`);
             this.appendLive(sessionId, "ai", greeting);
             this.isSpeaking = true;
-            await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
+            this.deepgram.muteInput();
+            try {
+              await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
+            } finally {
+              this.deepgram.unmuteInput();
+            }
           } catch (err: any) {
             console.error(`Greeting failed for session ${sessionId}:`, err.message);
           } finally {
@@ -370,21 +375,31 @@ export class AudioPipeline {
       const llmStartedAt = Date.now();
       let ttsStartedAt = llmStartedAt;
       try {
-        this.isSpeaking = true;
-
+        console.log(`🤖 Generating reply for lead turn: "${text.substring(0, 120)}"`);
         const aiResponse = await withTimeout(
           this.agent.respond(sessionId, text),
           LLM_RESPONSE_TIMEOUT_MS,
           "LLM respond"
         );
 
-        if (this.ended) return;
+        if (this.ended) {
+          console.warn(
+            `🤖 Reply ready but call already ended — dropping TTS for session ${sessionId}: "${aiResponse.substring(0, 80)}"`
+          );
+          return;
+        }
 
         this.appendLive(sessionId, "ai", aiResponse);
         console.log(`🤖 AI response: "${aiResponse.substring(0, 80)}"`);
 
+        this.isSpeaking = true;
+        this.deepgram.muteInput();
         ttsStartedAt = Date.now();
-        await this.streamTTS(ws, aiResponse, voiceId, sessionId);
+        try {
+          await this.streamTTS(ws, aiResponse, voiceId, sessionId);
+        } finally {
+          this.deepgram.unmuteInput();
+        }
 
         const latency = measureLatency(llmStartedAt, ttsStartedAt);
         const flag = latency.overBudget ? "⚠️" : "✅";
@@ -398,7 +413,7 @@ export class AudioPipeline {
         this.abortTTS = null;
         this.activeResponse = null;
         // If more speech arrived during the reply, process it
-        if (this.pendingLeadTurn.trim() && !this.leadTurnTimer) {
+        if (this.pendingLeadTurn.trim() && !this.leadTurnTimer && !this.ended) {
           this.leadTurnTimer = setTimeout(() => {
             this.leadTurnTimer = null;
             void this.flushLeadTurn(ws, sessionId, voiceId);
