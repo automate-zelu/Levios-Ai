@@ -223,7 +223,7 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
     // Status callback — fires when call completes/fails/busy
     statusCallback:       `${baseUrl}/api/call/status/${session.id}`,
     statusCallbackMethod: "POST",
-    statusCallbackEvent:  ["completed", "no-answer", "busy", "failed"],
+    statusCallbackEvent:  ["initiated", "ringing", "answered", "completed"],
     // Recording
     record:                  true,
     recordingStatusCallback: `${baseUrl}/api/call/recording/${session.id}`,

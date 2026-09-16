@@ -3686,6 +3686,7 @@ export default function CatalystApp() {
   const leadDetailMatch = location.pathname.match(/^\/leads\/([^/]+)$/);
   const isLeadDetail = !!leadDetailMatch;
   const page = isLeadDetail ? "Leads" : (PATH_TO_PAGE[location.pathname] ?? "Dashboard");
+  const isMessageInbox = page === "SMS Inbox" || page === "Email Inbox";
 
   // Collapse main CRM rail when opening a lead; restore when leaving
   useEffect(() => {
@@ -3955,8 +3956,14 @@ export default function CatalystApp() {
           </div>
         )}
         <div
-          className={`catalyst-content ${isLeadDetail ? "is-lead-detail" : ""}`}
-          style={isLeadDetail ? { ...S.content, padding: 0, overflow: "hidden" } : S.content}
+          className={`catalyst-content${isLeadDetail ? " is-lead-detail" : ""}${isMessageInbox ? " is-inbox" : ""}`}
+          style={
+            isLeadDetail
+              ? { ...S.content, padding: 0, overflowY: "hidden", overflowX: "hidden" }
+              : isMessageInbox
+                ? { ...S.content, overflowY: "hidden", overflowX: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }
+                : S.content
+          }
         >
           {renderPage()}
         </div>

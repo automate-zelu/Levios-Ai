@@ -163,7 +163,7 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
       url:  `${baseUrl}/api/call/connect/${session.id}`,
       statusCallback:       `${baseUrl}/api/call/status/${session.id}`,
       statusCallbackMethod: "POST",
-      statusCallbackEvent:  ["completed", "no-answer", "busy", "failed"],
+      statusCallbackEvent:  ["initiated", "ringing", "answered", "completed"],
     });
 
     // Store Twilio call SID
