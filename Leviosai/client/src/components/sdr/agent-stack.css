@@ -1,0 +1,123 @@
+.agent-stack {
+  --ink: #f4eee6;
+  --muted: #b8aa9c;
+  --dim: #7c7168;
+  --line: rgba(232, 196, 156, 0.14);
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #161310;
+  color: var(--ink);
+}
+
+.agent-stack-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.agent-stack-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+.agent-stack-head span {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.agent-stack-row {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-stack-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.agent-stack-card.is-transcriber { box-shadow: inset 3px 0 0 #2eb8a8; }
+.agent-stack-card.is-llm { box-shadow: inset 3px 0 0 #6ea0e8; }
+.agent-stack-card.is-voice { box-shadow: inset 3px 0 0 #e08a3a; }
+
+.agent-stack-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-stack-meta span {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.agent-stack-meta em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.agent-stack-controls {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-stack-select-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-stack-field {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.agent-stack-select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #100e0c;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.agent-stack-select:focus {
+  outline: 2px solid rgba(224, 138, 58, 0.45);
+  outline-offset: 1px;
+}
+
+@media (max-width: 720px) {
+  .agent-stack-row {
+    grid-template-columns: 1fr;
+  }
+}

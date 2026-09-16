@@ -47,6 +47,24 @@ export function hasKnowledgeBaseContent(text: string | null | undefined): boolea
   return !!(text && text.trim().length > 0);
 }
 
+/** Wrap extracted file text so RAG chunks keep a source label. */
+export function formatKbSourceBlock(filename: string, extractedText: string): string {
+  const name = (filename || "document").trim() || "document";
+  const body = (extractedText || "").replace(/\r\n/g, "\n").trim();
+  if (!body) return "";
+  return `--- Source: ${name} ---\n${body}`;
+}
+
+export function appendKnowledgeBaseDocuments(
+  existing: string | null | undefined,
+  blocks: string[]
+): string {
+  const parts = [(existing || "").trim(), ...blocks.map((b) => b.trim()).filter(Boolean)].filter(
+    Boolean
+  );
+  return parts.join("\n\n");
+}
+
 /**
  * Decide whether to re-embed on config save.
  * Rebuild when KB text changed, or when never embedded / no vectors yet.

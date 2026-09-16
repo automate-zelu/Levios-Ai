@@ -6,6 +6,7 @@ import { db } from "../lib/db.js";
 import { workspaces, sdrCallSessions } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
 import { getClientForWorkspace } from "../lib/twilio-subaccount.js";
+import { liveCallRegistry } from "../lib/calling/live-call-registry.js";
 
 const router = Router();
 
@@ -170,6 +171,10 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
       .update(sdrCallSessions)
       .set({ twilioCallSid: call.sid })
       .where(eq(sdrCallSessions.id, session.id));
+
+    // Appear on Live Calls page while ringing (before media stream opens)
+    liveCallRegistry.start(session.id, ws.id, []);
+    liveCallRegistry.setStatus(session.id, "initiated");
 
     await storage.logActivity({
       entityType: "lead",

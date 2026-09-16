@@ -3,6 +3,8 @@
 // Supports Vapi-style calendar tools when the SDR prompt includes the calendar block.
 
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { isClaudeModel } from "../agent-stack.js";
 import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 import {
   AIMessage,
@@ -21,6 +23,22 @@ import {
 import { hasCalendarPromptBlock } from "../calendar/prompt-block.js";
 
 const MAX_TOOL_ROUNDS = 3;
+
+function createCallLlm(model: string, temperature: number): ChatOpenAI | ChatAnthropic {
+  const id = model || "gpt-4o";
+  if (isClaudeModel(id) && process.env.ANTHROPIC_API_KEY) {
+    return new ChatAnthropic({
+      model: id,
+      temperature,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+    });
+  }
+  return new ChatOpenAI({
+    model: isClaudeModel(id) ? "gpt-4o" : id,
+    temperature,
+    openAIApiKey: process.env.OPENAI_API_KEY,
+  });
+}
 
 const outcomeSchema = z.object({
   outcome: z.enum(["booked", "qualified", "answered", "no_answer", "voicemail"]),
@@ -47,6 +65,7 @@ export interface CallAgentInitOpts {
   workspaceId: string;
   organizationId: number;
   leadId: number | null;
+  llmModel?: string | null;
 }
 
 export class LangChainCallAgent {
@@ -56,10 +75,11 @@ export class LangChainCallAgent {
   private leadId: number | null = null;
   private systemPrompt = "";
   private toolsEnabled = false;
-  private llm!: ChatOpenAI;
-  private llmWithTools: ReturnType<ChatOpenAI["bindTools"]> | null = null;
+  private llm!: ChatOpenAI | ChatAnthropic;
+  private llmWithTools: ReturnType<ChatOpenAI["bindTools"]> | ReturnType<ChatAnthropic["bindTools"]> | null = null;
   private tools: DynamicStructuredTool[] = [];
   private midCallBooking: { scheduledAt: Date; appointmentId: number } | null = null;
+  private llmModel = "gpt-4o";
 
   async init(opts: CallAgentInitOpts | string, systemPrompt?: string, workspaceId?: string): Promise<void> {
     const normalized: CallAgentInitOpts =
@@ -81,11 +101,8 @@ export class LangChainCallAgent {
     this.toolsEnabled =
       !!normalized.organizationId && hasCalendarPromptBlock(normalized.systemPrompt);
 
-    this.llm = new ChatOpenAI({
-      model: "gpt-4o",
-      temperature: 0.4,
-      openAIApiKey: process.env.OPENAI_API_KEY,
-    });
+    this.llmModel = normalized.llmModel || "gpt-4o";
+    this.llm = createCallLlm(this.llmModel, 0.4);
 
     this.tools = this.buildTools();
     this.llmWithTools =
@@ -255,18 +272,77 @@ export class LangChainCallAgent {
     return String(content ?? "");
   }
 
-  async respond(sessionId: string, leadUtterance: string): Promise<string> {
-    let inputWithContext = leadUtterance;
+  /** Rebuild LLM chat history after stream reconnect / process resume. */
+  async seedFromTranscript(
+    sessionId: string,
+    lines: ReadonlyArray<{ speaker: "ai" | "lead"; text: string }>
+  ): Promise<void> {
+    if (!this.sessionHistories.has(sessionId)) {
+      this.sessionHistories.set(sessionId, new InMemoryChatMessageHistory());
+    }
+    const history = this.sessionHistories.get(sessionId)!;
+    const existing = await history.getMessages();
+    if (existing.length > 0) return;
 
-    try {
-      const kbResults = await searchWorkspaceKnowledgeBase(this.workspaceId, leadUtterance, 3);
-      if (kbResults.length > 0) {
-        const kbContext = kbResults.map((r) => r.pageContent).join("\n");
-        inputWithContext =
-          `[Relevant context from your knowledge base:]\n${kbContext}\n\n[Lead said:] ${leadUtterance}`;
+    for (const line of lines) {
+      const text = (line.text || "").trim();
+      if (!text) continue;
+      if (line.speaker === "lead") {
+        await history.addMessage(new HumanMessage(text));
+      } else {
+        await history.addMessage(new AIMessage(text));
       }
-    } catch {
-      // non-fatal
+    }
+    console.log(
+      `🤖 Seeded ${lines.length} transcript lines into LLM history for session ${sessionId}`
+    );
+  }
+
+  /** Keep history aligned when we shorten/truncate the spoken greeting. */
+  async replaceLastAiMessage(sessionId: string, text: string): Promise<void> {
+    const history = this.sessionHistories.get(sessionId);
+    if (!history) return;
+    const msgs = await history.getMessages();
+    if (!msgs.length) {
+      await history.addMessage(new AIMessage(text));
+      return;
+    }
+    // InMemoryChatMessageHistory has no splice API — clear + rewrite
+    const rebuilt = [...msgs];
+    const last = rebuilt[rebuilt.length - 1];
+    const lastType =
+      typeof (last as any)?.getType === "function"
+        ? (last as any).getType()
+        : (last as any)?._getType?.();
+    if (lastType === "ai") {
+      rebuilt[rebuilt.length - 1] = new AIMessage(text);
+    } else {
+      rebuilt.push(new AIMessage(text));
+    }
+    await history.clear();
+    for (const m of rebuilt) await history.addMessage(m);
+  }
+
+  async respond(sessionId: string, leadUtterance: string): Promise<string> {
+    const trimmed = (leadUtterance || "").trim();
+    // Control cues like [CALL_CONNECTED] must not be stored as if the lead spoke them.
+    const isSystemCue = trimmed.startsWith("[") && trimmed.includes("]");
+
+    let inputForModel = trimmed;
+    if (!isSystemCue) {
+      try {
+        const kbResults = await searchWorkspaceKnowledgeBase(this.workspaceId, trimmed, 3);
+        if (kbResults.length > 0) {
+          const kbContext = kbResults.map((r) => r.pageContent).join("\n");
+          inputForModel =
+            `[Relevant context from your knowledge base — use only if needed, do not recite verbatim:]\n${kbContext}\n\n[Lead said:] ${trimmed}`;
+        }
+      } catch {
+        // non-fatal
+      }
+    } else {
+      inputForModel =
+        `${trimmed}\n\n(This is an internal instruction for you, not something the lead said.)`;
     }
 
     if (!this.sessionHistories.has(sessionId)) {
@@ -280,10 +356,12 @@ export class LangChainCallAgent {
       const aiMsg = await this.llm.invoke([
         new SystemMessage(this.systemPrompt),
         ...prior,
-        new HumanMessage(inputWithContext),
+        new HumanMessage(inputForModel),
       ]);
       const text = this.contentToText(aiMsg.content);
-      await history.addMessage(new HumanMessage(inputWithContext));
+      if (!isSystemCue) {
+        await history.addMessage(new HumanMessage(trimmed));
+      }
       await history.addMessage(new AIMessage(text));
       return text;
     }
@@ -291,7 +369,7 @@ export class LangChainCallAgent {
     const messages: any[] = [
       new SystemMessage(this.systemPrompt),
       ...prior,
-      new HumanMessage(inputWithContext),
+      new HumanMessage(inputForModel),
     ];
 
     const toolsByName = Object.fromEntries(this.tools.map((t) => [t.name, t]));
@@ -304,7 +382,9 @@ export class LangChainCallAgent {
 
       if (!toolCalls.length) {
         const text = this.contentToText(aiMsg.content);
-        await history.addMessage(new HumanMessage(inputWithContext));
+        if (!isSystemCue) {
+          await history.addMessage(new HumanMessage(trimmed));
+        }
         await history.addMessage(new AIMessage(text));
         return text;
       }
@@ -337,7 +417,9 @@ export class LangChainCallAgent {
       new HumanMessage("Respond to the lead now in concise spoken language. Do not call tools."),
     ]);
     const text = this.contentToText(final.content);
-    await history.addMessage(new HumanMessage(inputWithContext));
+    if (!isSystemCue) {
+      await history.addMessage(new HumanMessage(trimmed));
+    }
     await history.addMessage(new AIMessage(text));
     return text;
   }
@@ -352,11 +434,7 @@ export class LangChainCallAgent {
       };
     }
 
-    const llm = new ChatOpenAI({
-      model: "gpt-4o",
-      temperature: 0,
-      openAIApiKey: process.env.OPENAI_API_KEY,
-    });
+    const llm = createCallLlm(this.llmModel || "gpt-4o", 0);
 
     const structured = llm.withStructuredOutput(outcomeSchema);
 
@@ -364,6 +442,7 @@ export class LangChainCallAgent {
       `Analyse this sales call transcript and return the outcome and a brief summary.
 If an appointment was clearly booked, set outcome to "booked" and include scheduledAt as an ISO-8601 datetime when the time was agreed.
 If booked but no specific time was set, leave scheduledAt null.
+If the lead never spoke (AI greeting only, voicemail, or silence), outcome must be "no_answer" or "voicemail" — never "answered".
 
 Transcript:
 ${fullTranscript}`

@@ -329,6 +329,7 @@ export const storage = {
         leadFirstName: leads.firstName,
         leadLastName: leads.lastName,
         leadEmail: leads.email,
+        leadPhone: leads.phone,
         orgName: organizations.name,
       })
       .from(appointments)
@@ -344,6 +345,11 @@ export const storage = {
     if (conditions.length > 0) query = query.where(and(...conditions));
 
     return query;
+  },
+
+  async getAppointment(id: number, organizationId?: number | null) {
+    const rows = await this.getAppointments({ organizationId });
+    return rows.find((row) => row.id === id) ?? null;
   },
 
   async createAppointment(data: InsertAppointment) {

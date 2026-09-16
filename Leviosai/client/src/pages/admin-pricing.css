@@ -1,0 +1,351 @@
+/* Admin Pricing — client list + edit modal. */
+
+.pr-page {
+  display: grid;
+  gap: 16px;
+  max-width: 1180px;
+}
+
+.pr-card {
+  padding: 20px;
+  border-radius: 16px;
+  background: var(--admin-panel, #171410);
+  border: 1px solid var(--admin-line, rgba(232, 196, 156, 0.12));
+}
+
+.pr-card h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.pr-card > p,
+.pr-help {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--admin-muted, #b7aaa0);
+  max-width: 62ch;
+}
+
+.pr-global-grid {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.pr-global-grid--single {
+  grid-template-columns: minmax(220px, 360px);
+}
+
+.pr-global-grid label,
+.pr-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-global-grid input,
+.pr-clients-head input,
+.pr-field input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--admin-line, rgba(232, 196, 156, 0.18));
+  background: var(--admin-panel-2, #1e1a16);
+  color: var(--admin-ink, #f3ece4);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.pr-note,
+.pr-actions span {
+  font-size: 12px;
+  color: var(--admin-muted, #b7aaa0);
+}
+
+.pr-ok {
+  margin: 0;
+  color: #4ecf8a;
+  font-size: 13px;
+}
+
+.pr-btn {
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--admin-ink, #f3ece4);
+  background: transparent;
+}
+
+.pr-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pr-btn--primary {
+  background: linear-gradient(135deg, #e08a3a, #c45a1a);
+  color: #fff;
+}
+
+.pr-btn--ghost {
+  border-color: var(--admin-line, rgba(232, 196, 156, 0.18));
+  color: var(--admin-muted, #b7aaa0);
+}
+
+.pr-btn--icon {
+  min-width: 40px;
+  padding-inline: 10px;
+  font-size: 18px;
+}
+
+.pr-alert {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(231, 76, 60, 0.16);
+  color: #ff8e82;
+  font-size: 13px;
+}
+
+.pr-clients-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.pr-clients-head input {
+  width: min(280px, 100%);
+}
+
+.pr-table-wrap {
+  overflow-x: auto;
+}
+
+.pr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pr-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--admin-dim, #7a6f67);
+  border-bottom: 1px solid var(--admin-line, rgba(232, 196, 156, 0.1));
+}
+
+.pr-table td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(232, 196, 156, 0.06);
+  vertical-align: top;
+}
+
+.pr-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-cap {
+  text-transform: capitalize;
+}
+
+.pr-amt {
+  margin-top: 4px;
+  font-weight: 800;
+}
+
+.pr-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.pr-pill.is-on {
+  color: #4ecf8a;
+  background: rgba(78, 207, 138, 0.12);
+  border-color: rgba(78, 207, 138, 0.28);
+}
+
+.pr-pill.is-off {
+  color: var(--admin-dim, #7a6f67);
+  background: rgba(122, 111, 103, 0.16);
+}
+
+.pr-empty {
+  text-align: center;
+  padding: 28px 12px !important;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.pr-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.pr-modal {
+  position: relative;
+  width: min(680px, 100%);
+  max-height: min(90vh, 860px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: var(--admin-panel, #171410);
+  border: 1px solid var(--admin-line, rgba(232, 196, 156, 0.16));
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.pr-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--admin-line, rgba(232, 196, 156, 0.1));
+}
+
+.pr-modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.pr-modal-body {
+  overflow-y: auto;
+  padding: 18px;
+  display: grid;
+  gap: 18px;
+}
+
+.pr-label {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  font-size: 13px;
+}
+
+.pr-detail-grid p {
+  margin: 0;
+}
+
+.pr-detail-grid span {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  font-size: 13px;
+}
+
+.pr-check input {
+  width: 18px;
+  height: 18px;
+}
+
+.pr-check.is-locked {
+  color: var(--admin-muted, #b7aaa0);
+}
+
+.pr-field {
+  margin-top: 8px;
+  max-width: 240px;
+}
+
+.pr-charge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.pr-charge-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--admin-panel-2, #1e1a16);
+  border: 1px solid var(--admin-line, rgba(232, 196, 156, 0.1));
+  font-size: 12px;
+}
+
+.pr-charge-list p {
+  margin: 4px 0 0;
+  color: var(--admin-dim, #7a6f67);
+}
+
+.pr-charge-list em {
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .pr-global-grid,
+  .pr-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pr-btn {
+    transition: none;
+  }
+}

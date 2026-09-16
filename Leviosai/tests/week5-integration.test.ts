@@ -4,7 +4,7 @@
  * Covers:
  *  1. Full sequence: dormant → call (dry) → SMS → email → exhausted
  *  2. Multi-workspace isolation (prompts + enrollment scoping)
- *  3. Tier limit enforcement (scan skip + eligibility 429 path)
+ *  3. Commercial pricing — leftover lead-limit columns do not block eligibility
  *  4. Stripe webhook signed create/update/renew/delete (when server + secret up)
  *  5. Audio pipeline latency budget helpers (<1.5s warn)
  *  6. BullMQ delayed-job persistence across queue reconnect
@@ -40,11 +40,7 @@ import {
   enqueueJob,
   sdrQueue,
 } from "../lib/sdr-queue.js";
-import {
-  evaluateEnrollmentEligibility,
-  wouldExceedLeadLimitAfter,
-} from "../lib/sdr-eligibility.js";
-import { isLeadLimitReached } from "../lib/tiers.js";
+import { evaluateEnrollmentEligibility } from "../lib/sdr-eligibility.js";
 import {
   measureLatency,
   PIPELINE_LATENCY_WARN_MS,
@@ -267,23 +263,11 @@ describe("Week5 — multi-workspace isolation", () => {
 
 // ─── 3. Tier limit enforcement ────────────────────────────────────────────────
 
-describe("Week5 — tier limit enforcement", () => {
-  it("blocks eligibility and scan when monthly lead limit is reached", async (t) => {
+describe("Week5 — commercial pricing has no lead caps", () => {
+  it("allows eligibility even when leftover monthlyLeadLimit columns are full", async (t) => {
     if (!dbOk) return t.skip("database unavailable");
 
-    assert.equal(isLeadLimitReached(500, 500), true);
-    assert.equal(wouldExceedLeadLimitAfter(499, 500, 1), true);
-    assert.equal(wouldExceedLeadLimitAfter(498, 500, 1), false);
-
-    const fx = await createWeek5Workspace({
-      tag: "limit",
-      prompt: "PROMPT_LIMIT",
-      monthlyLeadLimit: 1,
-      monthlyLeadsUsed: 1,
-    });
-    fixtures.push(fx);
-
-    const denied = evaluateEnrollmentEligibility({
+    const allowed = evaluateEnrollmentEligibility({
       lead: { status: "new", consentStatus: "granted", dncClean: true, lastContactedAt: null },
       latestEnrollment: null,
       workspace: {
@@ -294,22 +278,7 @@ describe("Week5 — tier limit enforcement", () => {
       dormantDays: 0,
       requireDormant: true,
     });
-    assert.equal(denied.ok, false);
-    if (!denied.ok) assert.equal(denied.reason, "lead_limit");
-
-    const before = await db
-      .select()
-      .from(sdrEnrollments)
-      .where(eq(sdrEnrollments.workspaceId, fx.workspaceId));
-
-    const scan = await scanDormantLeads();
-    assert.ok(scan.workspacesSkippedLimit >= 1 || scan.enrolled === 0);
-
-    const after = await db
-      .select()
-      .from(sdrEnrollments)
-      .where(eq(sdrEnrollments.workspaceId, fx.workspaceId));
-    assert.equal(after.length, before.length, "at-limit workspace must not gain enrollments");
+    assert.equal(allowed.ok, true);
   });
 });
 

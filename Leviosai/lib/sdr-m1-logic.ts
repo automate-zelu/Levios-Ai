@@ -26,13 +26,13 @@ export function isMinuteLimitReached(minutesUsed: number, minuteLimit: number): 
 }
 
 /**
- * Billable calling minutes for usage metering.
+ * Billable calling time for usage metering — same second-level counting as
+ * in-browser test calls.
  * Unanswered / busy / failed dials do NOT count — even if Twilio reports a few
- * seconds of ring time (Math.ceil(1/60) would otherwise burn a full minute).
- * Only answered conversations (incl. booked/qualified/voicemail) are billed,
- * rounded up to whole minutes.
+ * seconds of ring time. Only answered conversations (incl. booked / qualified /
+ * voicemail) are billed. Tiny completed blips with no conversation stay free.
  */
-export function billableCallMinutes(
+export function billableCallSeconds(
   durationSeconds: number,
   opts: { callStatus?: string | null; outcome?: string | null } = {}
 ): number {
@@ -42,7 +42,7 @@ export function billableCallMinutes(
   if (status === "no-answer" || status === "busy" || status === "failed") return 0;
   if (outcome === "no_answer" || outcome === "busy" || outcome === "failed") return 0;
 
-  const secs = Math.max(0, Number(durationSeconds) || 0);
+  const secs = Math.max(0, Math.floor(Number(durationSeconds) || 0));
   if (secs <= 0) return 0;
 
   const answered =
@@ -55,7 +55,15 @@ export function billableCallMinutes(
   // carrier blips / immediate hangups with no conversation outcome.
   if (!answered && secs < 15) return 0;
 
-  return Math.ceil(secs / 60);
+  return secs;
+}
+
+/** Fractional minutes (seconds / 60) stored on the workspace usage counter. */
+export function billableCallMinutes(
+  durationSeconds: number,
+  opts: { callStatus?: string | null; outcome?: string | null } = {}
+): number {
+  return billableCallSeconds(durationSeconds, opts) / 60;
 }
 
 // ─── SMS FALL-THROUGH PLAN ────────────────────────────────────────────────────

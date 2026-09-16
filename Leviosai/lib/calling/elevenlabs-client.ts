@@ -10,6 +10,14 @@ import { Readable } from "stream";
 
 const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // ElevenLabs "Rachel"
 
+export function friendlyElevenLabsError(status: number, body: string): string {
+  const lower = (body || "").toLowerCase();
+  if (status === 401 || lower.includes("payment") || lower.includes("invoice")) {
+    return "The live-call ElevenLabs voice could not play — that account has a failed or unpaid invoice. Pay it in ElevenLabs to hear the same voice used on real calls.";
+  }
+  return `ElevenLabs TTS error ${status}: ${body}`;
+}
+
 // ─── μ-LAW ENCODER ───────────────────────────────────────────────────────────
 // Converts a 16-bit signed PCM sample to an 8-bit μ-law byte.
 
@@ -45,11 +53,12 @@ function pcm16kToMulaw8k(data: Buffer, leftover: Buffer): [Buffer, Buffer] {
 // ─── CLIENT ──────────────────────────────────────────────────────────────────
 
 export class ElevenLabsClient {
-  async synthesizeStream(text: string, voiceId?: string | null): Promise<Readable> {
+  async synthesizeStream(text: string, voiceId?: string | null, modelId?: string | null): Promise<Readable> {
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not set");
 
     const vid = voiceId || DEFAULT_VOICE_ID;
+    const model = modelId || "eleven_turbo_v2";
 
     // output_format MUST be a query parameter — body field is silently ignored
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${vid}/stream?output_format=ulaw_8000`;
@@ -62,7 +71,7 @@ export class ElevenLabsClient {
       },
       body: JSON.stringify({
         text,
-        model_id: "eleven_turbo_v2",
+        model_id: model,
         voice_settings: {
           stability:        0.5,
           similarity_boost: 0.75,
@@ -72,7 +81,7 @@ export class ElevenLabsClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`ElevenLabs TTS error ${response.status}: ${body}`);
+      throw new Error(friendlyElevenLabsError(response.status, body));
     }
 
     if (!response.body) throw new Error("ElevenLabs returned empty response body");
@@ -94,6 +103,33 @@ export class ElevenLabsClient {
     return raw;
   }
 
+  /** Browser test-call playback — MP3 buffer (not Twilio μ-law). */
+  async synthesizeMp3(text: string, voiceId?: string | null, modelId?: string | null): Promise<Buffer> {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not set");
+    const vid = voiceId || DEFAULT_VOICE_ID;
+    const model = modelId || "eleven_turbo_v2";
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${vid}?output_format=mp3_44100_128`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: model,
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(friendlyElevenLabsError(response.status, body));
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
   // List available voices — used by GET /api/call/voices
   async listVoices(): Promise<Array<{ id: string; name: string; previewUrl: string }>> {
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -111,5 +147,24 @@ export class ElevenLabsClient {
       name:       v.name,
       previewUrl: v.preview_url,
     }));
+  }
+
+  async getVoice(voiceId: string): Promise<{ id: string; name: string; previewUrl: string } | null> {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    const id = (voiceId || "").trim();
+    if (!apiKey || !id) return null;
+
+    const response = await fetch(`https://api.elevenlabs.io/v1/voices/${encodeURIComponent(id)}`, {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!response.ok) return null;
+
+    const v = (await response.json()) as any;
+    if (!v?.voice_id) return null;
+    return {
+      id: v.voice_id,
+      name: v.name || v.voice_id,
+      previewUrl: v.preview_url || "",
+    };
   }
 }

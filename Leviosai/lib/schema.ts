@@ -9,6 +9,7 @@ import {
   boolean,
   uuid,
   jsonb,
+  doublePrecision,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -42,16 +43,41 @@ export const organizations = pgTable("organizations", {
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
   stripePriceId: text("stripe_price_id"),
+  /** Day this org first subscribed — monthly charges land on this anniversary. */
+  billingCycleAnchorAt: timestamp("billing_cycle_anchor_at"),
+  /** Next automatic monthly retainer charge. */
+  nextBillingAt: timestamp("next_billing_at"),
+  /** Set when the user cancels auto-renew; cron skips further monthly charges. */
+  subscriptionCanceledAt: timestamp("subscription_canceled_at"),
+  lastBillingError: text("last_billing_error"),
   plan: text("plan").notNull().default("free"),
   industry: text("industry"),
   product: text("product").default("reviiv"),
   monthlyBudgetCents: integer("monthly_budget_cents"),
   dailyBudgetCents: integer("daily_budget_cents"),
+  /** Per-org appointment / job fee in cents (commercial pricing). */
   costPerAppointmentCents: integer("cost_per_appointment_cents"),
+  /** When null, use platform monthlyFeeEnabledByDefault. */
+  monthlyFeeEnabled: boolean("monthly_fee_enabled"),
+  /** When set, overrides the global monthly retainer for this org. */
+  monthlyFeeOverrideCents: integer("monthly_fee_override_cents"),
+  /** When null, appointment fee defaults to on. */
+  appointmentFeeEnabled: boolean("appointment_fee_enabled"),
   reactorEnabled: boolean("reactor_enabled").default(false),
   reactorConfig: text("reactor_config"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
+
+// ─── PLATFORM BILLING DEFAULTS (singleton row id = 1) ───────────────────────
+export const platformBillingSettings = pgTable("platform_billing_settings", {
+  id: serial("id").primaryKey(),
+  monthlyFeeCents: integer("monthly_fee_cents").notNull().default(29700),
+  monthlyFeeEnabledByDefault: boolean("monthly_fee_enabled_by_default").notNull().default(true),
+  defaultAppointmentFeeCents: integer("default_appointment_fee_cents").notNull().default(40000),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type PlatformBillingSettings = typeof platformBillingSettings.$inferSelect;
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
   leads: many(leads),
@@ -151,6 +177,35 @@ export const appointmentsRelations = relations(appointments, ({ one }) => ({
     references: [leads.id],
   }),
 }));
+
+// ─── APPOINTMENT / FEE CHARGES (commercial ledger) ─────────────────────────
+export const appointmentCharges = pgTable("appointment_charges", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  appointmentId: integer("appointment_id").references(() => appointments.id, {
+    onDelete: "set null",
+  }),
+  leadId: integer("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  workspaceId: uuid("workspace_id"),
+  /** monthly | appointment */
+  feeKind: text("fee_kind").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  /** pending | invoiced | waived | paid */
+  status: text("status").notNull().default("pending"),
+  description: text("description"),
+  /** YYYY-MM or YYYY-MM-DD for monthly retainers (unique per org). */
+  periodKey: text("period_key"),
+  stripeInvoiceItemId: text("stripe_invoice_item_id"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  lastChargeError: text("last_charge_error"),
+  lastChargeAttemptAt: timestamp("last_charge_attempt_at"),
+  chargedAt: timestamp("charged_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type AppointmentCharge = typeof appointmentCharges.$inferSelect;
 
 // ─── CAMPAIGNS ──────────────────────────────────────────────────────────────
 
@@ -372,8 +427,9 @@ export type InsertReactorEventLog = z.infer<typeof insertReactorEventLogSchema>;
 export type IndustryPricingEntry = typeof industryPricing.$inferSelect;
 export type InsertIndustryPricing = z.infer<typeof insertIndustryPricingSchema>;
 
-// ─── SDR: WORKSPACES ─────────────────────────────────────────────────────────
-// One workspace per organization. Holds SDR billing tier and monthly usage.
+// ─── SDR: per-organization agent (internal 1:1) ─────────────────────────────
+// Not a separate tenant. Users share an organization; this row is that org's
+// Twilio number, usage counters, and agent. organizationId is unique.
 
 export const workspaces = pgTable("workspaces", {
   id:                    uuid("id").defaultRandom().primaryKey(),
@@ -386,7 +442,8 @@ export const workspaces = pgTable("workspaces", {
   monthlyLeadLimit:      integer("monthly_lead_limit").notNull().default(500),
   monthlyLeadsUsed:      integer("monthly_leads_used").notNull().default(0),
   monthlyMinuteLimit:    integer("monthly_minute_limit").notNull().default(1000),
-  monthlyMinutesUsed:    integer("monthly_minutes_used").notNull().default(0),
+  monthlyMinutesUsed:    doublePrecision("monthly_minutes_used").notNull().default(0),
+  monthlyTestMinutesUsed: integer("monthly_test_minutes_used").notNull().default(0),
   seatLimit:             integer("seat_limit").notNull().default(5),
   // isActive defaults false — Stripe webhook activates after successful subscription
   isActive:              boolean("is_active").notNull().default(false),
@@ -412,6 +469,9 @@ export const sdrConfigs = pgTable("sdr_configs", {
   workspaceId:       uuid("workspace_id").notNull().unique().references(() => workspaces.id),
   assistantName:     text("assistant_name"),
   assistantVoiceId:  text("assistant_voice_id"),
+  sttModel:          text("stt_model"),
+  llmModel:          text("llm_model"),
+  ttsModel:          text("tts_model"),
   systemPrompt:      text("system_prompt").notNull(),
   knowledgeBase:     text("knowledge_base"),
   smsTemplate:       text("sms_template").notNull(),

@@ -8,6 +8,9 @@
 //   GET  /api/call/sessions/:id        — Single call session detail
 //   GET  /api/call/voices              — ElevenLabs voice list for frontend dropdown
 //   GET  /api/call/analytics           — Call funnel metrics for workspace
+//   GET  /api/call/live                — Active/live calls for workspace monitor
+//   GET  /api/call/live/:sessionId     — Live transcript snapshot (structured lines)
+//   GET  /api/call/live/:sessionId/events — SSE stream of live transcript updates
 
 import { Router, Request, Response } from "express";
 import twilio from "twilio";
@@ -30,18 +33,20 @@ import {
 } from "../lib/sdr-state-machine.js";
 import { enqueueJob, fallThroughToSms, storeEnrollmentJobId } from "../lib/sdr-queue.js";
 import { shouldRetryBusyCall, billableCallMinutes } from "../lib/sdr-m1-logic.js";
-import { AudioPipeline } from "../lib/calling/audio-pipeline.js";
+import { AudioPipeline, abortCallPipeline } from "../lib/calling/audio-pipeline.js";
 import { ElevenLabsClient } from "../lib/calling/elevenlabs-client.js";
 import { persistTwilioRecording, openRecordingStream } from "../lib/calling/recording-storage.js";
 import { decrypt } from "../lib/crypto.js";
 import { requireAuth } from "./auth.js";
 import { workspaceScope } from "../middleware/workspaceScope.js";
 import { validateTwilioCallSession } from "../middleware/twilioSignature.js";
-import { eq, and, desc, asc, count, sql, gte, lte } from "drizzle-orm";
+import { eq, and, desc, asc, count, sql, gte, lte, ne, or, isNull, inArray } from "drizzle-orm";
+import { liveCallRegistry, parseStoredTranscript } from "../lib/calling/live-call-registry.js";
 import { alias } from "drizzle-orm/pg-core";
 import { bookAppointmentWithCalendar } from "../lib/calendar/service.js";
 import { parseScheduledAt } from "../lib/calendar/booking-helpers.js";
 import { ensureAppointmentCalendarColumns } from "../lib/calendar/schema-ensure.js";
+import { transcriptHasLeadSpeech } from "../lib/calling/pipeline-helpers.js";
 
 const router = Router();
 const elevenlabs = new ElevenLabsClient();
@@ -67,27 +72,8 @@ router.post("/api/call/connect/:sessionId", validateTwilioCallSession, async (re
   const sessionId = req.params.sessionId as string;
   const baseUrl   = process.env.BASE_URL ?? `https://${req.hostname}`;
 
-  // Lead answered — advance enrollment call_initiated → call_connected
-  try {
-    const [session] = await db
-      .select()
-      .from(sdrCallSessions)
-      .where(eq(sdrCallSessions.id, sessionId));
-
-    if (session?.enrollmentId) {
-      const [enrollment] = await db
-        .select()
-        .from(sdrEnrollments)
-        .where(eq(sdrEnrollments.id, session.enrollmentId));
-
-      if (enrollment && stateMachine.canTransition(enrollment.status as any, "call_connected")) {
-        await stateMachine.transition(enrollment.id, "call_connected", { sessionId });
-      }
-    }
-  } catch (err: any) {
-    console.error(`Call connect state transition failed for ${sessionId}:`, err.message);
-    // Still return TwiML so the call is not dropped
-  }
+  // Twilio fetches this TwiML when the far end "answers" — including voicemail.
+  // Do NOT mark call_connected here. That waits until the lead actually speaks.
 
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const twiml = new VoiceResponse();
@@ -162,6 +148,12 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
         .where(eq(sdrCallSessions.id, sessionId));
     }
 
+    // Drop from Live Calls monitor when Twilio reports a terminal status
+    if (["completed", "no-answer", "busy", "failed", "canceled"].includes(callStatus)) {
+      liveCallRegistry.end(sessionId, "completed");
+      abortCallPipeline(sessionId);
+    }
+
     // SDR sequence state machine transitions — only for enrolled calls
     if (enrollment) {
       // Refresh enrollment so callAttempts reflects the increment from initiateCall
@@ -216,8 +208,11 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
 
         const outcome = updatedSession?.outcome;
         const st = (current?.status ?? enrollment.status) as string;
+        const leadSpoke = transcriptHasLeadSpeech(
+          updatedSession?.transcript || session.transcript
+        );
 
-        if (outcome === "booked") {
+        if (outcome === "booked" && leadSpoke) {
           if (st === "call_initiated" && stateMachine.canTransition("call_initiated", "call_connected")) {
             await stateMachine.transition(enrollment.id, "call_connected", { outcome });
           }
@@ -279,7 +274,7 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
           } catch (bookErr: any) {
             console.warn(`Appointment booking after call failed: ${bookErr.message}`);
           }
-        } else if (outcome === "qualified" || outcome === "answered") {
+        } else if ((outcome === "qualified" || outcome === "answered") && leadSpoke) {
           if (st === "call_initiated" && stateMachine.canTransition("call_initiated", "call_connected")) {
             await stateMachine.transition(enrollment.id, "call_connected", { outcome });
           }
@@ -288,23 +283,18 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
             await stateMachine.transition(enrollment.id, "call_answered", { outcome });
           }
           await stateMachine.transition(enrollment.id, "exhausted", { outcome });
-        } else if (
-          outcome === "no_answer" ||
-          outcome === "voicemail" ||
-          !outcome
-        ) {
-          // Connected but no booking — continue sequence via SMS
+        } else {
+          // Missed, voicemail, or greeting-only — continue sequence via SMS
           if (stateMachine.canTransition(st as any, "call_no_answer")) {
             await stateMachine.transition(enrollment.id, "call_no_answer", {
-              outcome: outcome ?? "no_answer",
+              outcome: leadSpoke ? (outcome ?? "no_answer") : "no_answer",
             });
             const jobId = await enqueueJob("SEND_SMS", enrollment.id, waitSmsMs);
             await storeEnrollmentJobId(enrollment.id, jobId);
           }
         }
 
-        // Increment workspace minute usage only for answered conversations.
-        // Math.ceil(1/60) previously billed a full minute for 1s no-answer blips.
+        // Increment workspace usage for answered conversations, by the second.
         const [sessionForBill] = await db
           .select({ outcome: sdrCallSessions.outcome, durationSeconds: sdrCallSessions.durationSeconds })
           .from(sdrCallSessions)
@@ -424,6 +414,235 @@ router.get("/api/call/recordings/:sessionId", async (req: Request, res: Response
 // ─── AUTHENTICATED ROUTES (JWT + workspace scope) ─────────────────────────────
 
 router.use("/api/call", requireAuth, workspaceScope);
+
+// ─── GET /api/call/live ───────────────────────────────────────────────────────
+// Truly live calls only: in-memory registry (streaming) OR freshly ringing (<2 min).
+
+router.get("/api/call/live", async (req: Request, res: Response) => {
+  try {
+    const workspaceId = req.workspace!.id;
+    const liveMem = liveCallRegistry.listByWorkspace(workspaceId);
+    const liveIds = new Set(liveMem.map((s) => s.sessionId));
+
+    const enrollmentLeads = alias(leads, "live_enrollment_leads");
+    const directLeads = alias(leads, "live_direct_leads");
+
+    // Ringing grace window — before Twilio media stream registers in memory
+    const ringingCut = new Date(Date.now() - 2 * 60 * 1000);
+    const idsToLoad = [...liveIds];
+
+    const liveOrRinging = idsToLoad.length
+      ? or(
+          inArray(sdrCallSessions.id, idsToLoad),
+          and(
+            inArray(sdrCallSessions.status, ["initiated", "active"]),
+            gte(sdrCallSessions.startedAt, ringingCut)
+          )
+        )
+      : and(
+          inArray(sdrCallSessions.status, ["initiated", "active"]),
+          gte(sdrCallSessions.startedAt, ringingCut)
+        );
+
+    const dbRows = await db
+      .select({
+        id: sdrCallSessions.id,
+        status: sdrCallSessions.status,
+        outcome: sdrCallSessions.outcome,
+        twilioCallSid: sdrCallSessions.twilioCallSid,
+        startedAt: sdrCallSessions.startedAt,
+        endedAt: sdrCallSessions.endedAt,
+        transcript: sdrCallSessions.transcript,
+        leadFirstName: sql<string | null>`COALESCE(${enrollmentLeads.firstName}, ${directLeads.firstName})`,
+        leadLastName: sql<string | null>`COALESCE(${enrollmentLeads.lastName}, ${directLeads.lastName})`,
+        leadPhone: sql<string | null>`COALESCE(${enrollmentLeads.phone}, ${directLeads.phone})`,
+      })
+      .from(sdrCallSessions)
+      .leftJoin(sdrEnrollments, eq(sdrCallSessions.enrollmentId, sdrEnrollments.id))
+      .leftJoin(enrollmentLeads, eq(sdrEnrollments.leadId, enrollmentLeads.id))
+      .leftJoin(directLeads, eq(sdrCallSessions.leadId, directLeads.id))
+      .where(
+        and(
+          eq(sdrCallSessions.workspaceId, workspaceId),
+          isNull(sdrCallSessions.endedAt),
+          liveOrRinging
+        )
+      )
+      .orderBy(desc(sdrCallSessions.startedAt))
+      .limit(30);
+
+    const byId = new Map<string, any>();
+
+    for (const row of dbRows) {
+      const mem = liveMem.find((m) => m.sessionId === row.id);
+      const isLive = liveIds.has(row.id);
+      // Drop DB "active/initiated" that aren't in registry and older than grace — already filtered
+      const lines = mem?.lines?.length
+        ? mem.lines
+        : parseStoredTranscript(row.transcript);
+      const status = mem?.status || (isLive ? "active" : row.status) || "initiated";
+      byId.set(row.id, {
+        id: row.id,
+        status,
+        outcome: row.outcome,
+        twilioCallSid: row.twilioCallSid,
+        startedAt: row.startedAt,
+        endedAt: row.endedAt,
+        live: isLive || status === "active",
+        lineCount: lines.length,
+        preview: lines.slice(-1)[0] || null,
+        leadName: row.leadFirstName
+          ? `${row.leadFirstName} ${row.leadLastName || ""}`.trim()
+          : null,
+        leadPhone: row.leadPhone,
+      });
+    }
+
+    for (const mem of liveMem) {
+      if (byId.has(mem.sessionId)) continue;
+      byId.set(mem.sessionId, {
+        id: mem.sessionId,
+        status: mem.status,
+        outcome: null,
+        twilioCallSid: null,
+        startedAt: new Date(mem.startedAt).toISOString(),
+        endedAt: null,
+        live: true,
+        lineCount: mem.lines.length,
+        preview: mem.lines.slice(-1)[0] || null,
+        leadName: null,
+        leadPhone: null,
+      });
+    }
+
+    const calls = [...byId.values()].sort((a, b) => {
+      const ta = a.startedAt ? new Date(a.startedAt).getTime() : 0;
+      const tb = b.startedAt ? new Date(b.startedAt).getTime() : 0;
+      return tb - ta;
+    });
+
+    res.json({ data: calls, total: calls.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/call/live/:sessionId ────────────────────────────────────────────
+// Snapshot of live (or just-finished) structured transcript lines.
+
+router.get("/api/call/live/:sessionId", async (req: Request, res: Response) => {
+  try {
+    const workspaceId = req.workspace!.id;
+    const sessionId = req.params.sessionId as string;
+
+    const [session] = await db
+      .select()
+      .from(sdrCallSessions)
+      .where(
+        and(eq(sdrCallSessions.id, sessionId), eq(sdrCallSessions.workspaceId, workspaceId))
+      );
+
+    if (!session) return res.status(404).json({ error: "Session not found" });
+
+    const mem = liveCallRegistry.get(sessionId);
+    const lines = mem?.lines?.length
+      ? mem.lines
+      : parseStoredTranscript(session.transcript);
+
+    let leadName: string | null = null;
+    let leadPhone: string | null = null;
+    if (session.leadId) {
+      const [lead] = await db
+        .select({
+          firstName: leads.firstName,
+          lastName: leads.lastName,
+          phone: leads.phone,
+        })
+        .from(leads)
+        .where(eq(leads.id, session.leadId))
+        .limit(1);
+      if (lead) {
+        leadName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || null;
+        leadPhone = lead.phone;
+      }
+    }
+
+    res.json({
+      id: session.id,
+      status: mem?.status || session.status,
+      outcome: session.outcome,
+      live: !!mem,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt,
+      leadName,
+      leadPhone,
+      lines,
+      aiSummary: session.aiSummary,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/call/live/:sessionId/events ─────────────────────────────────────
+// Server-Sent Events stream of transcript updates (Authorization: Bearer …).
+
+router.get("/api/call/live/:sessionId/events", async (req: Request, res: Response) => {
+  try {
+    const workspaceId = req.workspace!.id;
+    const sessionId = req.params.sessionId as string;
+
+    const [session] = await db
+      .select({ id: sdrCallSessions.id, workspaceId: sdrCallSessions.workspaceId, transcript: sdrCallSessions.transcript, status: sdrCallSessions.status })
+      .from(sdrCallSessions)
+      .where(
+        and(eq(sdrCallSessions.id, sessionId), eq(sdrCallSessions.workspaceId, workspaceId))
+      );
+
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    const send = (payload: unknown) => {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const mem = liveCallRegistry.get(sessionId);
+    if (!mem) {
+      const lines = parseStoredTranscript(session.transcript);
+      send({ type: "snapshot", sessionId, status: session.status || "completed", lines });
+      send({ type: "ended", sessionId, status: session.status || "completed", lines });
+      res.end();
+      return;
+    }
+
+    const unsub = liveCallRegistry.subscribe(sessionId, (event) => {
+      send(event);
+      if (event.type === "ended") {
+        unsub();
+        res.end();
+      }
+    });
+
+    const heartbeat = setInterval(() => {
+      res.write(`: ping\n\n`);
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsub();
+    });
+  } catch (err: any) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  }
+});
 
 // ─── GET /api/call/sessions ───────────────────────────────────────────────────
 // Paginated call session history for the workspace.
@@ -647,6 +866,18 @@ router.get("/api/call/voices", async (_req: Request, res: Response) => {
   try {
     const voices = await elevenlabs.listVoices();
     res.json(voices);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/api/call/voices/:voiceId", async (req: Request, res: Response) => {
+  try {
+    const voiceId = String(req.params.voiceId || "").trim();
+    if (!voiceId) return res.status(400).json({ error: "voiceId is required" });
+    const voice = await elevenlabs.getVoice(voiceId);
+    if (!voice) return res.status(404).json({ error: "Voice not found for that ID. Check ElevenLabs and that the key can access it." });
+    res.json(voice);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

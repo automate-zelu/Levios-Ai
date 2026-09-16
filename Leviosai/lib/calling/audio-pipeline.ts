@@ -19,17 +19,24 @@
 
 import type WebSocket from "ws";
 import { db } from "../db.js";
-import { sdrCallSessions, sdrConfigs, workspaces } from "../schema.js";
-import { eq } from "drizzle-orm";
+import { sdrCallSessions, sdrConfigs, sdrEnrollments, workspaces } from "../schema.js";
+import { and, eq, sql } from "drizzle-orm";
 import { DeepgramSTTClient } from "./deepgram-client.js";
 import { ElevenLabsClient } from "./elevenlabs-client.js";
 import { LangChainCallAgent } from "./langchain-agent.js";
 import { TranscriptStore, transcriptStoreFromJSON } from "./transcript-store.js";
+import { liveCallRegistry } from "./live-call-registry.js";
+import { stateMachine } from "../sdr-state-machine.js";
 import {
   LLM_RESPONSE_TIMEOUT_MS,
   TTS_TIMEOUT_MS,
+  LEAD_TURN_GAP_MS,
+  LEAD_TURN_MIN_WORDS,
   measureLatency,
   withTimeout,
+  mergeUtteranceFragments,
+  countWords,
+  transcriptHasLeadSpeech,
 } from "./pipeline-helpers.js";
 import {
   clearSayFallbackRedirect,
@@ -38,6 +45,15 @@ import {
   trackStreamClose,
   trackStreamOpen,
 } from "./tts-fallback.js";
+
+const livePipelines = new Map<string, AudioPipeline>();
+
+/** Twilio hangup / status callback — stop greeting loops after the phone already dropped. */
+export function abortCallPipeline(sessionId: string): void {
+  const pipeline = livePipelines.get(sessionId);
+  if (!pipeline) return;
+  void pipeline.forceHangup(sessionId);
+}
 
 // ─── AUDIO PIPELINE ───────────────────────────────────────────────────────────
 
@@ -51,6 +67,10 @@ export class AudioPipeline {
   private isSpeaking  = false;
   private activeResponse: Promise<void> | null = null;
   private abortTTS: (() => void) | null = null;
+  /** Fragments collected while lead is still talking */
+  private pendingLeadTurn = "";
+  private leadTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  private ttsModel: string | null = null;
 
   async handleStream(ws: WebSocket, sessionId: string): Promise<void> {
     const pendingMessages: any[] = [];
@@ -78,6 +98,10 @@ export class AudioPipeline {
           `📞 Stream closed without finalizing session ${sessionId} ` +
           `(remainingStreams=${remaining}, sayFallback=${isSayFallbackRedirect(sessionId)})`
         );
+        if (this.leadTurnTimer) {
+          clearTimeout(this.leadTurnTimer);
+          this.leadTurnTimer = null;
+        }
         this.deepgram.disconnect();
         this.ended = true;
         return;
@@ -102,6 +126,15 @@ export class AudioPipeline {
 
     if (!session) { ws.close(1011, "Session not found"); return; }
 
+    if (session.status === "completed" || session.endedAt) {
+      console.log(`📞 Refusing stream — session ${sessionId} already completed`);
+      trackStreamClose(sessionId);
+      ws.close(1000, "session already completed");
+      return;
+    }
+
+    livePipelines.set(sessionId, this);
+
     const [config] = await db
       .select()
       .from(sdrConfigs)
@@ -111,6 +144,7 @@ export class AudioPipeline {
       ws.close(1011, "SDR config not found — save your SDR Agent configuration first");
       return;
     }
+    this.ttsModel = (config as any).ttsModel || null;
 
     const [wsRow] = await db
       .select({ organizationId: workspaces.organizationId })
@@ -136,76 +170,30 @@ export class AudioPipeline {
       console.log(`📞 Resuming pipeline after Twilio <Say> fallback for session ${sessionId}`);
     }
 
+    liveCallRegistry.start(sessionId, session.workspaceId, this.transcript.toJSON());
+    liveCallRegistry.setStatus(sessionId, "active");
+
     await this.agent.init({
       sessionId,
       systemPrompt: config.systemPrompt || "",
       workspaceId: session.workspaceId,
       organizationId: wsRow?.organizationId || 0,
       leadId: session.leadId ?? null,
+      llmModel: (config as any).llmModel,
     });
+    // Restore conversation memory after <Say> reconnect (new pipeline instance)
+    if (this.transcript.lineCount > 0) {
+      await this.agent.seedFromTranscript(sessionId, this.transcript.toJSON());
+    }
     console.log(`🤖 LangChain agent initialized for session ${sessionId}`);
 
     console.log(`🎙️  Deepgram connecting for session ${sessionId}...`);
-    this.deepgram.connect().catch((err: Error) =>
+    this.deepgram.connect({ model: (config as any).sttModel || undefined }).catch((err: Error) =>
       console.error(`🎙️  Deepgram connect error for session ${sessionId}:`, err.message)
     );
 
-    this.deepgram.onTranscript(async (text: string) => {
-      if (this.ended) return;
-
-      if (this.isSpeaking) {
-        if (this.abortTTS) {
-          console.log(`🎙️  Barge-in — stopping AI speech: "${text}"`);
-          this.clearTwilioAudio(ws);
-          this.abortTTS();
-          this.abortTTS = null;
-          await new Promise(resolve => setTimeout(resolve, 150));
-        } else {
-          console.log(`🎙️  Transcript while AI generating (skipped): "${text}"`);
-          return;
-        }
-      }
-
-      this.transcript.append("lead", text);
-      console.log(`👤 Lead said: "${text}"`);
-
-      const responseTask = (async () => {
-        const llmStartedAt = Date.now();
-        let ttsStartedAt = llmStartedAt;
-        try {
-          this.isSpeaking = true;
-
-          const aiResponse = await withTimeout(
-            this.agent.respond(sessionId, text),
-            LLM_RESPONSE_TIMEOUT_MS,
-            "LLM respond"
-          );
-
-          if (!this.isSpeaking || this.ended) return;
-
-          this.transcript.append("ai", aiResponse);
-          console.log(`🤖 AI response: "${aiResponse.substring(0, 80)}"`);
-
-          ttsStartedAt = Date.now();
-          await this.streamTTS(ws, aiResponse, config.assistantVoiceId, sessionId);
-
-          const latency = measureLatency(llmStartedAt, ttsStartedAt);
-          const flag = latency.overBudget ? "⚠️" : "✅";
-          console.log(
-            `${flag} Pipeline latency session=${sessionId}: LLM=${latency.llmMs}ms TTS=${latency.ttsMs}ms total=${latency.totalMs}ms`
-          );
-        } catch (err: any) {
-          console.error(`AI response error for session ${sessionId}:`, err.message);
-          // TTS/LLM failure is non-fatal — keep listening for the next utterance
-        } finally {
-          this.isSpeaking = false;
-          this.abortTTS = null;
-          this.activeResponse = null;
-        }
-      })();
-
-      this.activeResponse = responseTask;
-      await responseTask;
+    this.deepgram.onTranscript((text: string) => {
+      void this.onLeadTranscript(ws, sessionId, text, config.assistantVoiceId);
     });
 
     this.deepgram.onError((err: Error) => {
@@ -223,7 +211,12 @@ export class AudioPipeline {
           await db
             .update(sdrCallSessions)
             .set({ twilioStreamSid: this.streamSid, status: "active" })
-            .where(eq(sdrCallSessions.id, sessionId));
+            .where(
+              and(
+                eq(sdrCallSessions.id, sessionId),
+                sql`${sdrCallSessions.status} IS DISTINCT FROM 'completed'`
+              )
+            );
 
           // After <Say> fallback, Twilio already spoke the last AI line — don't re-greet.
           if (resumingAfterSay) {
@@ -234,16 +227,23 @@ export class AudioPipeline {
 
           try {
             console.log(`🤖 Generating greeting for session ${sessionId}...`);
-            const greeting = await withTimeout(
+            const rawGreeting = await withTimeout(
               this.agent.respond(
                 sessionId,
-                "[CALL_CONNECTED] The call just connected. Deliver your opening greeting now."
+                "[OUTBOUND_CALL_CONNECTED] You just placed an OUTBOUND sales call to this lead " +
+                  "(they did not call you). Deliver a VERY short opening only: one sentence, max ~15 words. " +
+                  "State your name + company, that you are calling them, and ask if now is a good time. " +
+                  "Do NOT sound like inbound support/receptionist. Do NOT pitch services yet."
               ),
               LLM_RESPONSE_TIMEOUT_MS,
               "LLM greeting"
             );
+            const greeting = shortenGreeting(rawGreeting);
+            if (greeting !== rawGreeting.trim()) {
+              await this.agent.replaceLastAiMessage(sessionId, greeting);
+            }
             console.log(`🤖 Greeting: "${greeting.substring(0, 100)}"`);
-            this.transcript.append("ai", greeting);
+            this.appendLive(sessionId, "ai", greeting);
             this.isSpeaking = true;
             await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
           } catch (err: any) {
@@ -282,6 +282,143 @@ export class AudioPipeline {
     if (ws.readyState === ws.OPEN && this.streamSid) {
       ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
     }
+  }
+
+  /**
+   * Buffer lead speech fragments and only reply after LEAD_TURN_GAP_MS of quiet.
+   * Merges "could you" + "tell me more…" into one professional turn.
+   */
+  private async onLeadTranscript(
+    ws: WebSocket,
+    sessionId: string,
+    text: string,
+    voiceId: string | null | undefined
+  ): Promise<void> {
+    if (this.ended) return;
+
+    if (this.isSpeaking) {
+      if (this.abortTTS) {
+        console.log(`🎙️  Barge-in — stopping AI speech: "${text}"`);
+        this.clearTwilioAudio(ws);
+        this.abortTTS();
+        this.abortTTS = null;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        this.isSpeaking = false;
+      } else {
+        console.log(`🎙️  Transcript while AI generating (queued into turn): "${text}"`);
+      }
+    }
+
+    this.pendingLeadTurn = mergeUtteranceFragments(this.pendingLeadTurn, text);
+    console.log(`👤 Lead (buffering turn): "${this.pendingLeadTurn}"`);
+
+    if (this.leadTurnTimer) clearTimeout(this.leadTurnTimer);
+    this.leadTurnTimer = setTimeout(() => {
+      this.leadTurnTimer = null;
+      void this.flushLeadTurn(ws, sessionId, voiceId);
+    }, LEAD_TURN_GAP_MS);
+  }
+
+  private async flushLeadTurn(
+    ws: WebSocket,
+    sessionId: string,
+    voiceId: string | null | undefined
+  ): Promise<void> {
+    if (this.ended) return;
+    const text = this.pendingLeadTurn.trim();
+    this.pendingLeadTurn = "";
+    if (!text) return;
+
+    if (countWords(text) < LEAD_TURN_MIN_WORDS) {
+      console.log(`👤 Lead turn too short, skipping: "${text}"`);
+      return;
+    }
+
+    // Another response already in flight — fold into a follow-up only after it ends
+    if (this.activeResponse || this.isSpeaking) {
+      console.log(`👤 Lead turn delayed until AI finishes: "${text}"`);
+      this.pendingLeadTurn = text;
+      this.leadTurnTimer = setTimeout(() => {
+        this.leadTurnTimer = null;
+        void this.flushLeadTurn(ws, sessionId, voiceId);
+      }, 400);
+      return;
+    }
+
+    this.appendLive(sessionId, "lead", text);
+    console.log(`👤 Lead said (complete turn): "${text}"`);
+
+    try {
+      const [liveSession] = await db
+        .select({ enrollmentId: sdrCallSessions.enrollmentId })
+        .from(sdrCallSessions)
+        .where(eq(sdrCallSessions.id, sessionId));
+      if (liveSession?.enrollmentId) {
+        const [enr] = await db
+          .select()
+          .from(sdrEnrollments)
+          .where(eq(sdrEnrollments.id, liveSession.enrollmentId));
+        if (enr && stateMachine.canTransition(enr.status as any, "call_connected")) {
+          await stateMachine.transition(enr.id, "call_connected", { reason: "lead_speech" });
+        }
+      }
+    } catch (err: any) {
+      console.error(`call_connected on lead speech failed for ${sessionId}:`, err.message);
+    }
+
+    const responseTask = (async () => {
+      const llmStartedAt = Date.now();
+      let ttsStartedAt = llmStartedAt;
+      try {
+        this.isSpeaking = true;
+
+        const aiResponse = await withTimeout(
+          this.agent.respond(sessionId, text),
+          LLM_RESPONSE_TIMEOUT_MS,
+          "LLM respond"
+        );
+
+        if (this.ended) return;
+
+        this.appendLive(sessionId, "ai", aiResponse);
+        console.log(`🤖 AI response: "${aiResponse.substring(0, 80)}"`);
+
+        ttsStartedAt = Date.now();
+        await this.streamTTS(ws, aiResponse, voiceId, sessionId);
+
+        const latency = measureLatency(llmStartedAt, ttsStartedAt);
+        const flag = latency.overBudget ? "⚠️" : "✅";
+        console.log(
+          `${flag} Pipeline latency session=${sessionId}: LLM=${latency.llmMs}ms TTS=${latency.ttsMs}ms total=${latency.totalMs}ms`
+        );
+      } catch (err: any) {
+        console.error(`AI response error for session ${sessionId}:`, err.message);
+      } finally {
+        this.isSpeaking = false;
+        this.abortTTS = null;
+        this.activeResponse = null;
+        // If more speech arrived during the reply, process it
+        if (this.pendingLeadTurn.trim() && !this.leadTurnTimer) {
+          this.leadTurnTimer = setTimeout(() => {
+            this.leadTurnTimer = null;
+            void this.flushLeadTurn(ws, sessionId, voiceId);
+          }, 250);
+        }
+      }
+    })();
+
+    this.activeResponse = responseTask;
+    await responseTask;
+  }
+
+  /** Append to store + live registry, and checkpoint JSON for reconnect / monitor polling. */
+  private appendLive(sessionId: string, speaker: "ai" | "lead", text: string): void {
+    const at = Date.now();
+    this.transcript.append(speaker, text, at);
+    const lines = this.transcript.getLines();
+    const last = lines[lines.length - 1];
+    if (last) liveCallRegistry.append(sessionId, last);
+    void this.persistTranscriptCheckpoint(sessionId);
   }
 
   /** Persist transcript so a Say→Stream reconnect can restore context. */
@@ -323,7 +460,7 @@ export class AudioPipeline {
     let audioStream;
     try {
       audioStream = await withTimeout(
-        this.elevenlabs.synthesizeStream(text, voiceId),
+        this.elevenlabs.synthesizeStream(text, voiceId, this.ttsModel),
         TTS_TIMEOUT_MS,
         "ElevenLabs TTS"
       );
@@ -423,11 +560,21 @@ export class AudioPipeline {
     });
   }
 
+  /** Twilio status callback — finalize even if the media socket is still open. */
+  async forceHangup(sessionId: string): Promise<void> {
+    await this.endCall(sessionId, null as unknown as WebSocket);
+  }
+
   private async endCall(sessionId: string, _ws: WebSocket): Promise<void> {
     if (this.ended) return;
     this.ended = true;
     clearSayFallbackRedirect(sessionId);
 
+    if (this.leadTurnTimer) {
+      clearTimeout(this.leadTurnTimer);
+      this.leadTurnTimer = null;
+    }
+    this.pendingLeadTurn = "";
     this.deepgram.disconnect();
 
     if (this.activeResponse) {
@@ -466,13 +613,16 @@ export class AudioPipeline {
         bookedScheduledAt = mid.scheduledAt;
       }
 
+      const leadSpoke = transcriptHasLeadSpeech(fullTranscript);
+      const resolvedOutcome = mid ? "booked" : leadSpoke ? outcome : "no_answer";
+
       await db
         .update(sdrCallSessions)
         .set({
           transcript: fullTranscript,
-          aiSummary: summary,
-          outcome: mid ? "booked" : outcome,
-          bookedScheduledAt,
+          aiSummary: leadSpoke ? summary : "No lead speech captured (missed / voicemail).",
+          outcome: resolvedOutcome,
+          bookedScheduledAt: resolvedOutcome === "booked" ? bookedScheduledAt : null,
           status: "completed",
           endedAt: new Date(),
         })
@@ -492,8 +642,27 @@ export class AudioPipeline {
     }
 
     this.agent.cleanup(sessionId);
+    liveCallRegistry.end(sessionId, "completed");
+    if (livePipelines.get(sessionId) === this) {
+      livePipelines.delete(sessionId);
+    }
     console.log(
       `📞 Pipeline ended session=${sessionId} lines=${this.transcript.lineCount} durationMs=${this.transcript.getDurationMs()}`
     );
   }
+}
+
+/** Keep the first spoken greeting short even if the model over-talks. */
+export function shortenGreeting(text: string, maxWords = 18): string {
+  const cleaned = (text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return "Hi, this is Levios — is now a good time for a quick call?";
+  }
+  // Prefer first sentence if it's already concise
+  const sentence = cleaned.split(/(?<=[.!?])\s+/)[0]?.trim() || cleaned;
+  const words = sentence.split(/\s+/);
+  if (words.length <= maxWords) {
+    return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+  }
+  return `${words.slice(0, maxWords).join(" ").replace(/[,:;–—-]+$/, "")}.`;
 }

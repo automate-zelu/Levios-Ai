@@ -2,9 +2,9 @@ import { Router, Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { db } from "../lib/db.js";
-import { users, organizations, workspaces } from "../lib/schema.js";
+import { users, organizations } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
-import { getTierLimits } from "../lib/tiers.js";
+import { ensureOrgSdr } from "../lib/org-tenant.js";
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "catalyst-dev-secret-change-in-production";
@@ -17,7 +17,7 @@ declare global {
       userEmail?: string;
       userRole?: string;
       organizationId?: number | null;
-      // SDR workspace fields — set by requireAuth, consumed by workspaceScope middleware
+      // SDR is attached via organizationId; workspaceScope loads it from the org.
       workspaceId?: string;
       workspaceTier?: string;
     }
@@ -82,19 +82,18 @@ router.post("/api/auth/register", async (req: Request, res: Response) => {
       })
       .returning();
 
-    // Auto-create SDR workspace for this organization (starter limits from shared tiers)
-    const starter = getTierLimits("starter");
-    const [workspace] = await db
-      .insert(workspaces)
-      .values({
-        organizationId: org.id,
-        name: orgName,
-        tier: "starter",
-        monthlyLeadLimit: starter.monthlyLeadLimit,
-        monthlyMinuteLimit: starter.monthlyMinuteLimit,
-        seatLimit: starter.seatLimit,
-      })
-      .returning();
+    const sdr = await ensureOrgSdr(org.id);
+
+    void import("../lib/product-email.js")
+      .then(({ sendProductEmail }) =>
+        import("../lib/email-templates.js").then(({ welcomeEmail }) =>
+          sendProductEmail(
+            user.email,
+            welcomeEmail({ firstName: user.firstName, organizationName: org.name })
+          )
+        )
+      )
+      .catch((err: Error) => console.error("Welcome email failed:", err.message));
 
     const token = jwt.sign(
       {
@@ -102,8 +101,8 @@ router.post("/api/auth/register", async (req: Request, res: Response) => {
         email: user.email,
         role: user.role,
         organizationId: org.id,
-        workspaceId: workspace.id,
-        tier: workspace.tier,
+        workspaceId: sdr.workspaceId,
+        tier: sdr.tier,
       },
       JWT_SECRET,
       { expiresIn: "7d" }
@@ -113,8 +112,8 @@ router.post("/api/auth/register", async (req: Request, res: Response) => {
       token,
       user: publicUser(user, {
         organizationId: org.id,
-        workspaceId: workspace.id,
-        tier: workspace.tier,
+        workspaceId: sdr.workspaceId,
+        tier: sdr.tier,
         onboardingComplete: false,
       }),
     });
@@ -135,18 +134,12 @@ router.post("/api/auth/login", async (req: Request, res: Response) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
-    // Look up SDR workspace for this organization
     let workspaceId: string | null = null;
     let workspaceTier = "starter";
     if (user.organizationId) {
-      const [workspace] = await db
-        .select()
-        .from(workspaces)
-        .where(eq(workspaces.organizationId, user.organizationId));
-      if (workspace) {
-        workspaceId = workspace.id;
-        workspaceTier = workspace.tier;
-      }
+      const sdr = await ensureOrgSdr(user.organizationId);
+      workspaceId = sdr.workspaceId;
+      workspaceTier = sdr.tier;
     }
 
     const token = jwt.sign(
@@ -183,7 +176,12 @@ router.get("/api/auth/me", async (req: Request, res: Response) => {
     const decoded = jwt.verify(authHeader.slice(7), JWT_SECRET) as any;
     const [user] = await db.select().from(users).where(eq(users.id, decoded.userId));
     if (!user) return res.status(401).json({ error: "User not found" });
-    res.json(publicUser(user));
+    let extras: Record<string, unknown> = {};
+    if (user.organizationId) {
+      const sdr = await ensureOrgSdr(user.organizationId);
+      extras = { workspaceId: sdr.workspaceId, tier: sdr.tier, organizationId: user.organizationId };
+    }
+    res.json(publicUser(user, extras));
   } catch {
     res.status(401).json({ error: "Invalid token" });
   }

@@ -239,6 +239,105 @@ export async function createProviderEvent(
   return { eventId: data.id, htmlLink: data.webLink || null };
 }
 
+export async function updateProviderEvent(
+  provider: CalendarProvider,
+  accessToken: string,
+  calendarId: string,
+  eventId: string,
+  event: CalendarEventInput
+): Promise<CalendarEventResult> {
+  if (provider === "google") {
+    const calId = encodeURIComponent(calendarId || "primary");
+    const evId = encodeURIComponent(eventId);
+    const body: Record<string, unknown> = {
+      summary: event.title,
+      description: event.description || undefined,
+      start: toRfc3339(event.start, event.timezone),
+      end: toRfc3339(event.end, event.timezone),
+    };
+    if (event.attendeeEmail) {
+      body.attendees = [{ email: event.attendeeEmail, displayName: event.attendeeName || undefined }];
+    }
+    const res = await fetch(
+      `${GOOGLE_CALENDAR_API}/calendars/${calId}/events/${evId}?sendUpdates=all`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error?.message || `Update Google event failed (${res.status})`);
+    return { eventId: data.id || eventId, htmlLink: data.htmlLink || null };
+  }
+
+  const body: Record<string, unknown> = {
+    subject: event.title,
+    body: {
+      contentType: "Text",
+      content: event.description || "",
+    },
+    start: {
+      dateTime: event.start.toISOString().replace(/\.\d{3}Z$/, ""),
+      timeZone: event.timezone || "UTC",
+    },
+    end: {
+      dateTime: event.end.toISOString().replace(/\.\d{3}Z$/, ""),
+      timeZone: event.timezone || "UTC",
+    },
+  };
+  const path = `${microsoftGraphBase()}/me/events/${encodeURIComponent(eventId)}`;
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data: any = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || `Update Outlook event failed (${res.status})`);
+  return { eventId: data.id || eventId, htmlLink: data.webLink || null };
+}
+
+export async function deleteProviderEvent(
+  provider: CalendarProvider,
+  accessToken: string,
+  calendarId: string,
+  eventId: string
+): Promise<void> {
+  if (provider === "google") {
+    const calId = encodeURIComponent(calendarId || "primary");
+    const evId = encodeURIComponent(eventId);
+    const res = await fetch(
+      `${GOOGLE_CALENDAR_API}/calendars/${calId}/events/${evId}?sendUpdates=all`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+    if (res.status === 404 || res.status === 410) return;
+    if (!res.ok) {
+      const data: any = await res.json().catch(() => ({}));
+      throw new Error(data.error?.message || `Delete Google event failed (${res.status})`);
+    }
+    return;
+  }
+
+  const res = await fetch(`${microsoftGraphBase()}/me/events/${encodeURIComponent(eventId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (res.status === 404 || res.status === 410) return;
+  if (!res.ok) {
+    const data: any = await res.json().catch(() => ({}));
+    throw new Error(data.error?.message || `Delete Outlook event failed (${res.status})`);
+  }
+}
+
 export interface BusyInterval {
   start: Date;
   end: Date;

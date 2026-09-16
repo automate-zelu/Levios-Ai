@@ -16,6 +16,8 @@ import {
 } from "./booking-helpers.js";
 import {
   createProviderEvent,
+  updateProviderEvent,
+  deleteProviderEvent,
   listProviderCalendars,
   queryProviderFreeBusy,
   computeOpenSlots,
@@ -56,6 +58,8 @@ export interface AvailabilityResult {
   connected: boolean;
   error?: string;
   prefs?: CalendarBookingPrefs;
+  /** True when slots are working-hours fallback (FreeBusy failed). */
+  degraded?: boolean;
 }
 async function readOrgSettings(organizationId: number): Promise<Record<string, any>> {
   try {
@@ -199,6 +203,31 @@ function formatSlotLabel(start: Date, end: Date, timeZone: string): string {
   }
 }
 
+/** Working-hours slots with no FreeBusy (used when Google Calendar API is down). */
+export function workingHoursFallbackSlots(
+  prefs: CalendarBookingPrefs,
+  now = new Date()
+): AvailabilitySlotDto[] {
+  const timezone = prefs.timezone || "America/New_York";
+  const timeMin = new Date(now.getTime() + 60 * 60_000);
+  const timeMax = new Date(timeMin.getTime() + prefs.daysAhead * 24 * 60 * 60_000);
+  const open = computeOpenSlots({
+    timeMin,
+    timeMax,
+    busy: [],
+    durationMinutes: prefs.durationMinutes,
+    maxSlots: prefs.maxSlots,
+    timezone,
+    dayStartHour: prefs.dayStartHour,
+    dayEndHour: prefs.dayEndHour,
+  });
+  return open.map((s) => ({
+    start: s.start.toISOString(),
+    end: s.end.toISOString(),
+    label: formatSlotLabel(s.start, s.end, timezone),
+  }));
+}
+
 /** Make Google Cloud “API not enabled” errors actionable for agents + UI. */
 export function humanizeCalendarApiError(raw: string | null | undefined): string {
   const msg = String(raw || "").trim();
@@ -285,13 +314,15 @@ export async function getCalendarAvailability(
       prefs,
     };
   } catch (err: any) {
+    const fallback = workingHoursFallbackSlots(prefs);
     return {
       provider,
       timezone,
       connected: true,
-      slots: [],
+      slots: fallback,
       error: humanizeCalendarApiError(err?.message || "Availability check failed"),
       prefs,
+      degraded: true,
     };
   }
 }
@@ -318,6 +349,45 @@ export async function bookAppointmentWithCalendar(
     scheduledAt: input.scheduledAt,
     status: "scheduled",
   });
+
+  // Bill Levios client for this booking when their per-appointment fee is enabled.
+  try {
+    const { recordBookingAppointmentCharge } = await import("../commercial-pricing-service.js");
+    await recordBookingAppointmentCharge({
+      organizationId: input.organizationId,
+      appointmentId: appt.id,
+      leadId: input.leadId,
+      source: "voice_or_calendar_book",
+    });
+  } catch (err: any) {
+    console.error("appointment charge failed:", err?.message || err);
+  }
+
+  const attendeeEmail = input.attendeeEmail ?? lead?.email;
+  if (attendeeEmail) {
+    void (async () => {
+      const { formatBookingWhen } = await import("../booking-lifecycle.js");
+      const { bookingEmail } = await import("../email-templates.js");
+      const { sendEmailViaGmail } = await import("../gmail/send.js");
+      const { storage: st } = await import("../storage.js");
+      const org = await st.getOrganization(input.organizationId);
+      const when = formatBookingWhen(input.scheduledAt, input.timezone);
+      const mail = bookingEmail({
+        kind: "confirmed",
+        firstName: input.attendeeName || lead?.firstName,
+        title,
+        whenLabel: when,
+        companyName: org?.name,
+      });
+      await sendEmailViaGmail(
+        input.organizationId,
+        attendeeEmail,
+        mail.subject,
+        mail.text,
+        mail.html
+      );
+    })().catch((err: Error) => console.error("Booking confirmation email failed:", err.message));
+  }
 
   const status = await getCalendarStatus(input.organizationId);
   const provider = status.activeProvider;
@@ -380,4 +450,175 @@ export async function bookAppointmentWithCalendar(
       syncError: humanizeCalendarApiError(err?.message || "Calendar sync failed"),
     };
   }
+}
+
+export type BookingLifecycleAction = "cancel" | "reschedule" | "delete";
+
+export interface MutateAppointmentInput {
+  organizationId: number;
+  appointmentId: number;
+  action: BookingLifecycleAction;
+  scheduledAt?: Date;
+  notify?: boolean;
+  durationMinutes?: number;
+  timezone?: string;
+}
+
+export interface MutateAppointmentResult {
+  appointment: Record<string, unknown> | null;
+  calendarSynced: boolean;
+  syncError?: string;
+  notified: { sms: boolean; email: boolean };
+  notifyErrors: { sms?: string; email?: string };
+  action: BookingLifecycleAction;
+}
+
+async function syncCalendarForMutation(opts: {
+  organizationId: number;
+  action: BookingLifecycleAction;
+  calendarEventId: string | null;
+  calendarProvider: string | null;
+  title: string;
+  scheduledAt: Date;
+  durationMinutes?: number;
+  timezone?: string;
+  attendeeEmail?: string | null;
+  attendeeName?: string | null;
+}): Promise<{ synced: boolean; error?: string; eventId?: string | null }> {
+  const { isCalendarProvider } = await import("./types.js");
+  const provider = opts.calendarProvider;
+  if (!opts.calendarEventId || !isCalendarProvider(provider)) {
+    return { synced: false };
+  }
+  try {
+    const tokens = await getValidAccessToken(opts.organizationId, provider);
+    if (!tokens) return { synced: false, error: "Calendar not connected" };
+
+    if (opts.action === "reschedule") {
+      const event = buildCalendarEventPayload({
+        title: opts.title,
+        scheduledAt: opts.scheduledAt,
+        durationMinutes: opts.durationMinutes,
+        attendeeEmail: opts.attendeeEmail,
+        attendeeName: opts.attendeeName,
+        timezone: opts.timezone,
+      });
+      await updateProviderEvent(provider, tokens.accessToken, tokens.calendarId, opts.calendarEventId, event);
+      return { synced: true, eventId: opts.calendarEventId };
+    }
+
+    await deleteProviderEvent(provider, tokens.accessToken, tokens.calendarId, opts.calendarEventId);
+    return { synced: true, eventId: null };
+  } catch (err: any) {
+    return { synced: false, error: humanizeCalendarApiError(err?.message || "Calendar sync failed") };
+  }
+}
+
+export async function mutateAppointmentWithCalendar(
+  input: MutateAppointmentInput
+): Promise<MutateAppointmentResult> {
+  const {
+    canPerformBookingAction,
+    planBookingMutation,
+    composeBookingNotice,
+    formatBookingWhen,
+  } = await import("../booking-lifecycle.js");
+  const { notifyLeadBookingChange } = await import("../booking-notify-send.js");
+
+  const row = await storage.getAppointment(input.appointmentId, input.organizationId);
+  if (!row) {
+    throw Object.assign(new Error("Appointment not found"), { status: 404 });
+  }
+
+  const allowed = canPerformBookingAction(row.status, input.action);
+  if (!allowed.ok) {
+    throw Object.assign(new Error(allowed.reason || "Action not allowed"), { status: 400 });
+  }
+
+  if (input.action === "reschedule" && !input.scheduledAt) {
+    throw Object.assign(new Error("scheduledAt is required to reschedule"), { status: 400 });
+  }
+
+  const plan = planBookingMutation(input.action);
+  const prefs = await getCalendarBookingPrefs(input.organizationId);
+  const timezone = input.timezone || prefs.timezone || "America/New_York";
+  const nextTime = input.action === "reschedule" ? input.scheduledAt! : new Date(row.scheduledAt);
+  const leadName = [row.leadFirstName, row.leadLastName].filter(Boolean).join(" ").trim();
+
+  const cal = await syncCalendarForMutation({
+    organizationId: input.organizationId,
+    action: input.action,
+    calendarEventId: row.calendarEventId,
+    calendarProvider: row.calendarProvider,
+    title: row.title,
+    scheduledAt: nextTime,
+    durationMinutes: input.durationMinutes || prefs.durationMinutes,
+    timezone,
+    attendeeEmail: row.leadEmail,
+    attendeeName: leadName || null,
+  });
+
+  if (plan.deleteRow) {
+    await storage.deleteAppointment(row.id);
+  } else {
+    const patch: Record<string, unknown> = { status: plan.nextStatus };
+    if (input.action === "reschedule") {
+      patch.scheduledAt = nextTime;
+    }
+    if (plan.calendar === "delete") {
+      patch.calendarEventId = null;
+    }
+    await storage.updateAppointment(row.id, patch as any);
+  }
+
+  const previousWhen = formatBookingWhen(new Date(row.scheduledAt), timezone);
+  const nextWhen = formatBookingWhen(nextTime, timezone);
+  const notice = composeBookingNotice({
+    action: input.action,
+    leadFirstName: row.leadFirstName,
+    title: row.title,
+    previousWhen,
+    nextWhen,
+    companyName: row.orgName,
+  });
+
+  let notified = { sms: false, email: false };
+  let notifyErrors: { sms?: string; email?: string } = {};
+  if (input.notify !== false) {
+    const sent = await notifyLeadBookingChange({
+      organizationId: input.organizationId,
+      leadId: row.leadId,
+      phone: row.leadPhone,
+      email: row.leadEmail,
+      sms: notice.sms,
+      emailSubject: notice.emailSubject,
+      emailBody: notice.emailBody,
+    });
+    notified = { sms: sent.sms, email: sent.email };
+    notifyErrors = sent.errors;
+  }
+
+  const appointment = plan.deleteRow
+    ? null
+    : await storage.getAppointment(row.id, input.organizationId);
+
+  await storage.logActivity({
+    entityType: "appointment",
+    entityId: row.id,
+    action: input.action === "delete" ? "deleted" : input.action === "cancel" ? "cancelled" : "rescheduled",
+    details:
+      input.action === "reschedule"
+        ? `Rescheduled from ${previousWhen} to ${nextWhen}`
+        : `${input.action} — ${previousWhen}`,
+    organizationId: input.organizationId,
+  });
+
+  return {
+    appointment: appointment as any,
+    calendarSynced: cal.synced,
+    syncError: cal.error,
+    notified,
+    notifyErrors,
+    action: input.action,
+  };
 }

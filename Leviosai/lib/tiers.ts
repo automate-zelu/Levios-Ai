@@ -7,6 +7,8 @@ export type SdrTier = "starter" | "growth" | "scale" | "enterprise";
 export interface TierLimits {
   monthlyLeadLimit: number;
   monthlyMinuteLimit: number;
+  /** Complimentary in-browser test-call minutes per billing period */
+  monthlyTestMinuteLimit: number;
   seatLimit: number;
   /** Display label */
   label: string;
@@ -22,6 +24,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
     label: "Starter",
     monthlyLeadLimit: 500,
     monthlyMinuteLimit: 1_000,
+    monthlyTestMinuteLimit: 20,
     seatLimit: 2,
     priceHint: "$297–$497 / mo",
   },
@@ -29,6 +32,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
     label: "Growth",
     monthlyLeadLimit: 2_000,
     monthlyMinuteLimit: 4_000,
+    monthlyTestMinuteLimit: 40,
     seatLimit: 5,
     priceHint: "$797–$997 / mo",
   },
@@ -36,6 +40,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
     label: "Scale",
     monthlyLeadLimit: 5_000,
     monthlyMinuteLimit: 10_000,
+    monthlyTestMinuteLimit: 60,
     seatLimit: 15,
     priceHint: "$1,497–$1,997 / mo",
   },
@@ -43,6 +48,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
     label: "Enterprise",
     monthlyLeadLimit: UNLIMITED,
     monthlyMinuteLimit: UNLIMITED,
+    monthlyTestMinuteLimit: 60,
     seatLimit: UNLIMITED,
     priceHint: "$2,497–$3,497 / mo",
   },

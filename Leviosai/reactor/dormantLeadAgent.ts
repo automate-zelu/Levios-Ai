@@ -5,9 +5,8 @@
 //
 // On each run:
 //   1. Calls scanDormantLeads() across all active workspaces
-//   2. Respects per-workspace monthly tier limits — skips workspaces at limit
-//   3. Per-lead errors are caught without crashing the full scan
-//   4. Logs enrolled count back to the Reactor result
+//   2. Per-lead errors are caught without crashing the full scan
+//   3. Logs enrolled count back to the Reactor result
 
 import { BaseAgent } from "./agents/base-agent.js";
 import { scanDormantLeads } from "../lib/sdr-dormant.js";
@@ -33,8 +32,7 @@ export class DormantLeadAgent extends BaseAgent {
     context.log(
       "info",
       `SDR dormant lead scan complete: ${result.enrolled} enrolled (${result.reenrolled} re-enrolls), ` +
-        `${result.skipped} skipped, ${result.workspacesSkippedLimit} workspaces at lead limit, ` +
-        `${result.workspacesScanned} workspaces scanned`
+        `${result.skipped} skipped, ${result.workspacesScanned} workspaces scanned`
     );
 
     return this.ok({

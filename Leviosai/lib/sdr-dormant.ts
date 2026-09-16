@@ -9,7 +9,6 @@ import { db } from "./db.js";
 import { sdrConfigs, sdrEnrollments, workspaces, leads } from "./schema.js";
 import {
   evaluateEnrollmentEligibility,
-  wouldExceedLeadLimitAfter,
   SKIP_LEAD_STATUSES,
 } from "./sdr-eligibility.js";
 import { eq, and, lt, or, isNull, notInArray, sql, desc } from "drizzle-orm";
@@ -78,21 +77,6 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
       continue;
     }
 
-    // Tier-limit skip — entire workspace (validated + counted for ops)
-    if (
-      wouldExceedLeadLimitAfter(
-        workspace.monthlyLeadsUsed,
-        workspace.monthlyLeadLimit,
-        0
-      )
-    ) {
-      workspacesSkippedLimit++;
-      console.log(
-        `SDR Scan: workspace ${workspace.id} at lead limit (${workspace.monthlyLeadsUsed}/${workspace.monthlyLeadLimit}) — skipping`
-      );
-      continue;
-    }
-
     const dormantCutoff = new Date();
     dormantCutoff.setDate(dormantCutoff.getDate() - config.dormantDays);
 
@@ -111,20 +95,6 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
       );
 
     for (const lead of dormantLeads) {
-      // Per-workspace mid-scan limit (do not use global enrolled counter)
-      if (
-        wouldExceedLeadLimitAfter(
-          workspace.monthlyLeadsUsed,
-          workspace.monthlyLeadLimit,
-          enrolledThisWorkspace
-        )
-      ) {
-        console.log(
-          `SDR Scan: workspace ${workspace.id} hit lead limit mid-scan — stopping`
-        );
-        break;
-      }
-
       const latest = await getLatestEnrollment(config.workspaceId, lead.id);
       const decision = evaluateEnrollmentEligibility({
         lead: {
@@ -137,7 +107,6 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
         workspace: {
           isActive: workspace.isActive,
           monthlyLeadsUsed: workspace.monthlyLeadsUsed + enrolledThisWorkspace,
-          monthlyLeadLimit: workspace.monthlyLeadLimit,
         },
         dormantDays: config.dormantDays,
         requireDormant: true,

@@ -259,10 +259,11 @@ describe("M10 prompt block + open slots", () => {
 
   it("computes open slots around busy intervals", async () => {
     const { computeOpenSlots } = await import("../lib/calendar/providers.js");
-    const timeMin = new Date("2026-08-03T12:00:00.000Z"); // Mon
-    const timeMax = new Date("2026-08-05T23:00:00.000Z");
-    const busyStart = new Date("2026-08-03T14:00:00.000Z");
-    const busyEnd = new Date("2026-08-03T15:00:00.000Z");
+    // Use a Monday far enough in the future so "now + 5m" does not wipe the window.
+    const timeMin = new Date("2030-01-07T12:00:00.000Z"); // Mon
+    const timeMax = new Date("2030-01-09T23:00:00.000Z");
+    const busyStart = new Date("2030-01-07T14:00:00.000Z");
+    const busyEnd = new Date("2030-01-07T15:00:00.000Z");
     const slots = computeOpenSlots({
       timeMin,
       timeMax,
@@ -304,9 +305,9 @@ describe("M10 prompt block + open slots", () => {
     assert.match(src, /\/api\/calendar\/booking-prefs/);
   });
 
-  it("ships CalendarToolsPanel on SDR Agent", () => {
+  it("ships CalendarToolsPanel on SDR Setup", () => {
     assert.ok(existsSync(path.join(root, "client/src/components/sdr/CalendarToolsPanel.jsx")));
-    const page = readFileSync(path.join(root, "client/src/pages/SDRConfigPage.jsx"), "utf8");
+    const page = readFileSync(path.join(root, "client/src/pages/SDRSetupPage.jsx"), "utf8");
     assert.match(page, /CalendarToolsPanel/);
   });
 });

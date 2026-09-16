@@ -5,13 +5,12 @@ import { billingApi } from "../../api.js";
 const POLL_MS = 3000;
 
 /**
- * Step 1 — Subscribe via Stripe Checkout; poll /api/billing until sdr.isActive.
+ * Step 1 — Activate with the global monthly retainer (no tier plan picker).
  */
 export function OnboardingStep1({ onSubscribed }) {
   const [billing, setBilling] = useState(null);
-  const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [checkoutPlan, setCheckoutPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const refresh = async () => {
@@ -29,16 +28,14 @@ export function OnboardingStep1({ onSubscribed }) {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const [status, planList] = await Promise.all([
-        refresh(),
-        billingApi.getPlans().catch(() => ({ plans: [] })),
-      ]);
+      const status = await refresh();
       if (cancelled) return;
-      setPlans(Array.isArray(planList) ? planList : planList?.plans || []);
       setLoading(false);
       if (status?.sdr?.isActive) onSubscribed?.();
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -50,13 +47,13 @@ export function OnboardingStep1({ onSubscribed }) {
     return () => clearInterval(id);
   }, [billing?.sdr?.isActive]);
 
-  const startCheckout = async (planKey) => {
-    setCheckoutPlan(planKey);
+  const startCheckout = async () => {
+    setBusy(true);
     setErr("");
     try {
       const origin = window.location.origin;
       const res = await billingApi.checkout(
-        planKey,
+        "monthly",
         `${origin}/?onboarding=1&checkout=success`,
         `${origin}/?onboarding=1&checkout=cancel`
       );
@@ -68,100 +65,86 @@ export function OnboardingStep1({ onSubscribed }) {
     } catch (e) {
       setErr(e.message || "Checkout failed");
     } finally {
-      setCheckoutPlan(null);
+      setBusy(false);
     }
   };
 
   if (loading) {
-    return <p style={{ color: COLORS.textMuted, fontSize: 14 }}>Checking subscription…</p>;
+    return <p role="status" style={{ color: COLORS.textMuted, fontSize: 14 }}>Checking billing…</p>;
   }
 
   if (billing?.sdr?.isActive) {
     return (
       <div style={{ textAlign: "center", padding: "12px 0" }}>
-        <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
-        <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 8px" }}>Subscription active</h3>
+        <div style={{ fontSize: 40, marginBottom: 12 }} aria-hidden="true">✓</div>
+        <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 8px" }}>Billing active</h3>
         <p style={{ color: COLORS.textMuted, fontSize: 13, margin: 0 }}>
-          Your workspace is live{billing?.sdr?.tier ? ` on the ${billing.sdr.tier} plan` : ""}. Continue to configure your AI SDR.
+          Your workspace is live. Continue to configure your AI SDR.
         </p>
       </div>
     );
   }
 
-  const paidPlans = (Array.isArray(plans) ? plans : []).filter(
-    (p) => p.key && ["starter", "growth", "scale", "enterprise"].includes(p.key)
-  );
-  const planCards = paidPlans.length
-    ? paidPlans
-    : [
-        { key: "starter", name: "Starter", monthlyPriceLabel: "$297 / mo", leadsLimit: 500, minutesLimit: 1000, seatLimit: 2 },
-        { key: "growth", name: "Growth", monthlyPriceLabel: "$797 / mo", leadsLimit: 2000, minutesLimit: 4000, seatLimit: 5 },
-        { key: "scale", name: "Scale", monthlyPriceLabel: "$1,497 / mo", leadsLimit: 5000, minutesLimit: 10000, seatLimit: 15 },
-        { key: "enterprise", name: "Enterprise", monthlyPriceLabel: "$2,497 / mo", leadsLimit: 999999, minutesLimit: 999999, seatLimit: 999999 },
-      ];
+  const commercial = billing?.commercialPricing;
+  const monthlyLabel = commercial?.monthlyFeeEnabled
+    ? `${commercial.monthlyFeeLabel} / mo`
+    : "Monthly fee off for your account";
+  const apptLabel = commercial?.appointmentFeeEnabled
+    ? `${commercial.appointmentFeeLabel} per booked appointment`
+    : "Per-appointment fee off until an admin enables it";
 
   return (
     <div>
-      <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Choose a plan</h3>
+      <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Activate your account</h3>
       <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 20px", lineHeight: 1.5 }}>
-        Flat monthly subscription. Subscribe to activate your workspace — we&apos;ll detect payment when you return from Stripe.
+        Levios uses one global monthly retainer for every client, plus a per-appointment rate set for your business.
+        There are no Starter / Growth / Scale plan tiers.
       </p>
-      <div style={{ display: "grid", gap: 12 }}>
-        {planCards.map((p) => {
-          const key = p.key || p.id || p.name?.toLowerCase();
-          const busy = checkoutPlan === key;
-          const limitLine =
-            p.leadsLimit != null
-              ? `${p.leadsLimit >= 999999 ? "Unlimited" : Number(p.leadsLimit).toLocaleString()} leads · ${
-                  p.minutesLimit >= 999999 ? "Unlimited" : Number(p.minutesLimit ?? 0).toLocaleString()
-                } min / mo`
-              : "";
-          const priceLabel = p.monthlyPriceLabel || p.priceHint || limitLine;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => startCheckout(key)}
-              disabled={!!checkoutPlan || p.purchasable === false}
-              style={{
-                ...S.card,
-                marginBottom: 0,
-                textAlign: "left",
-                cursor: checkoutPlan ? "wait" : "pointer",
-                opacity: busy ? 0.7 : 1,
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.surfaceAlt,
-                color: COLORS.text,
-                fontFamily: "inherit",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>{p.name || key}</div>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: COLORS.orangeLight, marginTop: 4 }}>{priceLabel}</div>
-                  {limitLine && (
-                    <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>{limitLine}</div>
-                  )}
-                </div>
-                <span style={{ ...S.btn("primary"), padding: "8px 14px", pointerEvents: "none", flexShrink: 0 }}>
-                  {busy ? "Redirecting…" : "Subscribe"}
-                </span>
-              </div>
-            </button>
-          );
-        })}
+
+      <div
+        style={{
+          ...S.card,
+          marginBottom: 16,
+          background: COLORS.surfaceAlt,
+        }}
+      >
+        <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 650 }}>
+          Your rates
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.orangeLight, marginBottom: 8 }}>
+          {monthlyLabel}
+        </div>
+        <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.45 }}>
+          {apptLabel}
+        </div>
       </div>
+
+      <button
+        type="button"
+        onClick={startCheckout}
+        disabled={busy || billing?.stripeConfigured === false}
+        style={{
+          ...S.btn("primary"),
+          width: "100%",
+          minHeight: 44,
+          opacity: busy ? 0.7 : 1,
+        }}
+      >
+        {busy ? "Redirecting to Stripe…" : "Activate monthly billing"}
+      </button>
+
       {err && (
-        <div style={{ marginTop: 14, padding: "9px 13px", borderRadius: 8, background: `${COLORS.red}20`, color: COLORS.red, fontSize: 12 }}>
+        <div role="alert" style={{ marginTop: 14, padding: "9px 13px", borderRadius: 8, background: `${COLORS.red}20`, color: COLORS.red, fontSize: 12 }}>
           {err}
         </div>
       )}
-      <p style={{ fontSize: 11, color: COLORS.textDim, marginTop: 16 }}>
-        Already paid? This page refreshes every few seconds. In local/dev without Stripe, ask an admin to activate the workspace.
+
+      <p style={{ fontSize: 11, color: COLORS.textDim, marginTop: 16, lineHeight: 1.45 }}>
+        Already paid? This page refreshes every few seconds. Locally without Stripe, ask an admin to activate the workspace.
       </p>
       <button
         type="button"
-        style={{ ...S.btn("ghost"), marginTop: 12, width: "100%" }}
+        style={{ ...S.btn("ghost"), marginTop: 12, width: "100%", minHeight: 44 }}
         onClick={() => onSubscribed?.()}
       >
         Continue without checkout (dev)

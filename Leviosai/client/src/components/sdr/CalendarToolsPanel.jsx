@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { COLORS, S } from "../../theme.js";
-import { calendarApi } from "../../api.js";
+import { calendarApi, sdrApi } from "../../api.js";
 import {
   CALENDAR_TOOL_CHIPS,
   DEFAULT_BOOKING_PREFS,
@@ -71,24 +71,34 @@ const START_HOUR_OPTIONS = hourOptions(6, 20);
 const END_HOUR_OPTIONS = hourOptions(7, 22);
 
 /**
- * SDR Agent panel — pick calendar, set slot window via dropdowns, enable tools in prompt.
+ * Calendar booking rules — which calendar, slot window, and whether live tools are in the prompt.
+ * Use persistPrompt on SDR Setup so this page can save the agent prompt itself.
  */
-export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarContext }) {
+export function CalendarToolsPanel({
+  systemPrompt,
+  onPromptChange,
+  onCalendarContext,
+  persistPrompt = false,
+  embedded = false,
+}) {
   const [status, setStatus] = useState(null);
   const [calendars, setCalendars] = useState([]);
   const [prefs, setPrefs] = useState(DEFAULT_BOOKING_PREFS);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
+  const [prompt, setPrompt] = useState(systemPrompt || "");
 
   const load = async () => {
     setLoading(true);
     try {
-      const [st, prefRes] = await Promise.all([
+      const [st, prefRes, cfg] = await Promise.all([
         calendarApi.status(),
         calendarApi.getBookingPrefs().catch(() => ({ prefs: DEFAULT_BOOKING_PREFS })),
+        persistPrompt ? sdrApi.getConfig().catch(() => null) : Promise.resolve(null),
       ]);
       setStatus(st);
+      if (persistPrompt) setPrompt(cfg?.systemPrompt || "");
       const nextPrefs = { ...DEFAULT_BOOKING_PREFS, ...(st.bookingPrefs || prefRes.prefs || {}) };
       setPrefs(nextPrefs);
       const conn = st.connections?.find((c) => c.provider === st.activeProvider);
@@ -116,8 +126,13 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!persistPrompt) setPrompt(systemPrompt || "");
+  }, [systemPrompt, persistPrompt]);
+
   const activeConn = status?.connections?.find((c) => c.provider === status?.activeProvider);
-  const toolsOn = hasCalendarPromptBlock(systemPrompt);
+  const currentPrompt = persistPrompt ? prompt : systemPrompt;
+  const toolsOn = hasCalendarPromptBlock(currentPrompt);
 
   const setPref = (key, value) => {
     setPrefs((p) => {
@@ -150,14 +165,24 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
     }
   };
 
-  const applyPromptBlock = (savedPrefs = prefs) => {
-    const next = injectCalendarPromptBlock(systemPrompt, {
+  const applyPromptBlock = async (savedPrefs = prefs, extraSnippet = null) => {
+    let next = injectCalendarPromptBlock(currentPrompt, {
       provider: status?.activeProvider || "google",
       accountEmail: activeConn?.accountEmail,
       prefs: savedPrefs,
       timezone: savedPrefs.timezone,
     });
-    onPromptChange(next);
+    if (extraSnippet) next = appendToolSnippet(next, extraSnippet);
+
+    if (persistPrompt) {
+      const cfg = await sdrApi.getConfig();
+      if (!cfg) throw new Error("Save your SDR Agent config first, then enable calendar tools.");
+      await sdrApi.saveConfig({ ...cfg, systemPrompt: next });
+      setPrompt(next);
+    } else {
+      onPromptChange?.(next);
+    }
+    return next;
   };
 
   const handleSavePrefs = async () => {
@@ -166,8 +191,12 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
     try {
       const { prefs: saved } = await calendarApi.saveBookingPrefs(prefs);
       setPrefs({ ...DEFAULT_BOOKING_PREFS, ...saved });
-      applyPromptBlock(saved);
-      setMsg("Availability window saved and calendar tools block updated in the prompt. Remember to Save Configuration.");
+      await applyPromptBlock(saved);
+      setMsg(
+        persistPrompt
+          ? "Availability window saved and applied to the agent prompt."
+          : "Window saved and prompt updated. Click Save Configuration on SDR Agent to keep it."
+      );
     } catch (e) {
       setMsg(e.message || "Failed to save prefs");
     } finally {
@@ -175,27 +204,55 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
     }
   };
 
-  const handleEnableTools = () => {
-    applyPromptBlock(prefs);
-    setMsg("Calendar tools block added to the system prompt. Save Configuration to keep it.");
+  const handleEnableTools = async () => {
+    setBusy("prompt");
+    setMsg("");
+    try {
+      await applyPromptBlock(prefs);
+      setMsg(
+        persistPrompt
+          ? toolsOn
+            ? "Calendar tools in the agent prompt were refreshed."
+            : "Calendar tools added to the agent prompt."
+          : "Calendar tools added to the prompt. Click Save Configuration on SDR Agent to keep it."
+      );
+    } catch (e) {
+      setMsg(e.message || "Could not update prompt");
+    } finally {
+      setBusy("");
+    }
   };
 
-  const handleChip = (chip) => {
+  const handleChip = async (chip) => {
     if (chip.id === "full_block") {
-      handleEnableTools();
+      await handleEnableTools();
       return;
     }
-    if (chip.snippet) {
-      onPromptChange(appendToolSnippet(systemPrompt, chip.snippet));
-      setMsg(`Added “${chip.label}” to the system prompt.`);
+    if (!chip.snippet) return;
+    setBusy("prompt");
+    setMsg("");
+    try {
+      if (persistPrompt) {
+        const cfg = await sdrApi.getConfig();
+        if (!cfg) throw new Error("Save your SDR Agent config first.");
+        const next = appendToolSnippet(cfg.systemPrompt || "", chip.snippet);
+        await sdrApi.saveConfig({ ...cfg, systemPrompt: next });
+        setPrompt(next);
+      } else {
+        onPromptChange?.(appendToolSnippet(currentPrompt, chip.snippet));
+      }
+      setMsg(`Added “${chip.label}” to the agent prompt.`);
+    } catch (e) {
+      setMsg(e.message || "Could not update prompt");
+    } finally {
+      setBusy("");
     }
   };
 
   if (loading) {
     return (
-      <div style={S.card}>
-        <div style={S.cardHeader}>Calendar booking</div>
-        <div style={{ fontSize: 13, color: COLORS.textMuted }}>Loading calendar…</div>
+      <div style={embedded ? undefined : S.card}>
+        <div style={{ fontSize: 13, color: COLORS.textMuted }}>Loading booking settings…</div>
       </div>
     );
   }
@@ -210,28 +267,24 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
 
   const fieldWrap = { minWidth: 0 };
 
-  return (
-    <div style={S.card}>
-      <div style={S.cardHeader}>
-        <span>Calendar booking</span>
+  const body = (
+    <>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 650 }}>Booking rules</div>
         {toolsOn ? (
-          <span style={{ ...S.badge(COLORS.green), fontSize: 10 }}>Tools in prompt</span>
+          <span style={{ ...S.badge(COLORS.green), fontSize: 10 }}>Live tools in prompt</span>
         ) : (
           <span style={{ ...S.badge(COLORS.orange), fontSize: 10 }}>Tools not in prompt</span>
         )}
       </div>
-
       <p style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
-        Yes — the agent only gets live <code style={{ color: COLORS.text }}>check_availability</code> /{" "}
-        <code style={{ color: COLORS.text }}>book_appointment</code> when the system prompt includes the
-        calendar tools block. Use the button below (or the chips above the prompt). Slot dropdowns configure
-        what those tools search — they run automatically during the call.
+        The agent can check availability and book only after calendar tools are in the system prompt.
+        These dropdowns set the window those tools search during a call.
       </p>
 
       {!status?.activeProvider ? (
         <div style={{ padding: 14, borderRadius: 8, background: COLORS.surfaceAlt, fontSize: 13, color: COLORS.textMuted }}>
-          Connect Google Calendar under <strong style={{ color: COLORS.text }}>SDR Setup</strong> or{" "}
-          <strong style={{ color: COLORS.text }}>Connect Your Tech → Calendars</strong> first.
+          Connect Google Calendar above, then return here to choose a calendar and booking window.
         </div>
       ) : (
         <>
@@ -268,15 +321,20 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
               flexWrap: "wrap",
               gap: 10,
               alignItems: "center",
-              marginBottom: 18,
+              marginBottom: 20,
             }}
           >
             <button
               type="button"
               style={{ ...S.btn(toolsOn ? "secondary" : "primary"), padding: "10px 16px", fontSize: 13 }}
+              disabled={busy === "prompt"}
               onClick={handleEnableTools}
             >
-              {toolsOn ? "Refresh tools block in prompt" : "Enable calendar tools in prompt"}
+              {busy === "prompt"
+                ? "Updating…"
+                : toolsOn
+                  ? "Refresh tools in prompt"
+                  : "Enable calendar tools in prompt"}
             </button>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {CALENDAR_TOOL_CHIPS.filter((c) => c.id !== "full_block").map((chip) => (
@@ -301,7 +359,7 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
 
           <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 6 }}>Availability window</div>
           <p style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 0, marginBottom: 14, lineHeight: 1.45 }}>
-            Used automatically when the agent checks availability. Pick frames from the dropdowns, then save.
+            Used when the agent checks availability. Save to apply.
           </p>
 
           <div
@@ -395,16 +453,13 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
               lineHeight: 1.5,
             }}
           >
-            Preview: search{" "}
-            <strong style={{ color: COLORS.text }}>
-              {DAYS_AHEAD_OPTIONS.find((o) => o.value === prefs.daysAhead)?.label || `${prefs.daysAhead} days`}
-            </strong>
-            , meetings{" "}
-            <strong style={{ color: COLORS.text }}>{prefs.durationMinutes} min</strong>, hours{" "}
-            <strong style={{ color: COLORS.text }}>
-              {formatHourLabel(prefs.dayStartHour)} – {formatHourLabel(prefs.dayEndHour)}
-            </strong>{" "}
-            ({prefs.timezone?.replace(/_/g, " ")})
+            {DAYS_AHEAD_OPTIONS.find((o) => o.value === prefs.daysAhead)?.label || `${prefs.daysAhead} days`}
+            {" · "}
+            {prefs.durationMinutes} min meetings
+            {" · "}
+            {formatHourLabel(prefs.dayStartHour)} – {formatHourLabel(prefs.dayEndHour)}
+            {" · "}
+            {prefs.timezone?.replace(/_/g, " ")}
           </div>
 
           <button
@@ -413,7 +468,7 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
             disabled={busy === "prefs"}
             onClick={handleSavePrefs}
           >
-            {busy === "prefs" ? "Saving…" : "Save window + apply to prompt"}
+            {busy === "prefs" ? "Saving…" : persistPrompt ? "Save booking window" : "Save window + apply to prompt"}
           </button>
         </>
       )}
@@ -421,8 +476,11 @@ export function CalendarToolsPanel({ systemPrompt, onPromptChange, onCalendarCon
       {msg && (
         <div style={{ marginTop: 12, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.45 }}>{msg}</div>
       )}
-    </div>
+    </>
   );
+
+  if (embedded) return <div>{body}</div>;
+  return <div style={S.card}>{body}</div>;
 }
 
 function SelectField({ id, label, value, options, onChange, style, labelStyle }) {

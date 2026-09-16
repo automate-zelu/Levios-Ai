@@ -95,4 +95,44 @@ describe("M6 admin component inventory", () => {
     assert.match(src, /\/api\/admin\/workspaces\/:id\/enrollments/);
     assert.match(src, /adminLimiter/);
   });
+
+  it("admin UI uses distinct /admin/... URLs instead of in-memory page state", () => {
+    const panel = readFileSync(path.join(root, "client/src/pages/AdminPanel.jsx"), "utf8");
+    assert.match(panel, /ADMIN_PAGE_PATHS/);
+    assert.match(panel, /NavLink/);
+    assert.doesNotMatch(panel, /setActivePage/);
+
+    const app = readFileSync(path.join(root, "client/src/App.jsx"), "utf8");
+    assert.match(app, /isAdminAppPath/);
+    assert.match(app, /parseAdminLocation/);
+  });
+});
+
+describe("M6 admin URL routing", () => {
+  it("maps each operator section to its own path", async () => {
+    const { parseAdminLocation, isAdminAppPath, safeAdminNext, ADMIN_PAGE_PATHS } = await import(
+      "../client/src/lib/admin-routes.js"
+    );
+
+    assert.equal(isAdminAppPath("/admin"), true);
+    assert.equal(isAdminAppPath("/admin/pricing"), true);
+    assert.equal(isAdminAppPath("/admin-login"), false);
+    assert.equal(isAdminAppPath("/billing"), false);
+
+    assert.deepEqual(parseAdminLocation("/admin"), { page: "overview", workspaceId: null, known: true });
+    assert.deepEqual(parseAdminLocation("/admin/pricing"), { page: "pricing", workspaceId: null, known: true });
+    assert.deepEqual(parseAdminLocation("/admin/payments"), { page: "payments", workspaceId: null, known: true });
+    assert.deepEqual(parseAdminLocation("/admin/accounts"), { page: "workspaces", workspaceId: null, known: true });
+    assert.deepEqual(parseAdminLocation("/admin/accounts/ws-9"), {
+      page: "workspaces",
+      workspaceId: "ws-9",
+      known: true,
+    });
+    assert.equal(parseAdminLocation("/admin/mystery").known, false);
+
+    assert.equal(ADMIN_PAGE_PATHS.pricing, "/admin/pricing");
+    assert.equal(safeAdminNext("?next=/admin/payments"), "/admin/payments");
+    assert.equal(safeAdminNext("?next=/admin-login"), "/admin");
+    assert.equal(safeAdminNext("?next=https://evil.example"), "/admin");
+  });
 });

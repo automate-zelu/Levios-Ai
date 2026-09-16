@@ -7,6 +7,7 @@ import { db } from "./db.js";
 import { workspaces, sdrConfigs, sdrEnrollments, organizations, sdrCallSessions } from "./schema.js";
 import { eq, sql, desc, count, and, gte, lte } from "drizzle-orm";
 import { getTierLimits, isSdrTier, type SdrTier } from "./tiers.js";
+import { ensureTestCreditColumn } from "./schema-ensure.js";
 import { filterUsageAlerts, ADMIN_USAGE_ALERT_RATIO } from "./admin-helpers.js";
 
 // ─── WORKSPACE LIST ───────────────────────────────────────────────────────────
@@ -85,6 +86,20 @@ export async function getWorkspaceDetail(workspaceId: string) {
     ? await db.select().from(organizations).where(eq(organizations.id, workspace.organizationId))
     : [null];
 
+  let commercialPricing = null;
+  let recentCharges: any[] = [];
+  let platformDefaults = null;
+  if (org) {
+    const {
+      getOrgCommercialPricing,
+      getPlatformCommercialDefaults,
+      listRecentAppointmentCharges,
+    } = await import("./commercial-pricing-service.js");
+    commercialPricing = await getOrgCommercialPricing(org.id);
+    platformDefaults = await getPlatformCommercialDefaults();
+    recentCharges = await listRecentAppointmentCharges(org.id, 10);
+  }
+
   return {
     workspace,
     organization: org
@@ -93,8 +108,15 @@ export async function getWorkspaceDetail(workspaceId: string) {
           name: org.name,
           plan: org.plan,
           stripeSubscriptionId: org.stripeSubscriptionId,
+          costPerAppointmentCents: org.costPerAppointmentCents,
+          monthlyFeeEnabled: org.monthlyFeeEnabled,
+          monthlyFeeOverrideCents: org.monthlyFeeOverrideCents,
+          appointmentFeeEnabled: org.appointmentFeeEnabled,
         }
       : null,
+    commercialPricing,
+    platformDefaults,
+    recentCharges,
     sdrConfig: config
       ? {
           id: config.id,
@@ -183,9 +205,10 @@ export async function changeWorkspaceTier(workspaceId: string, tier: string) {
 // ─── RESET MONTHLY USAGE ──────────────────────────────────────────────────────
 
 export async function resetWorkspaceUsage(workspaceId: string) {
+  await ensureTestCreditColumn();
   const [updated] = await db
     .update(workspaces)
-    .set({ monthlyLeadsUsed: 0, monthlyMinutesUsed: 0, updatedAt: new Date() })
+    .set({ monthlyLeadsUsed: 0, monthlyMinutesUsed: 0, monthlyTestMinutesUsed: 0, updatedAt: new Date() })
     .where(eq(workspaces.id, workspaceId))
     .returning();
   return updated;

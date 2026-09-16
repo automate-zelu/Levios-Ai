@@ -2,12 +2,15 @@ import { Resend } from "resend";
 import "dotenv/config";
 
 const apiKey = process.env.RESEND_API_KEY;
-const fromEmail = process.env.RESEND_FROM_EMAIL || "christian@leviosai.io";
 
 const client = apiKey ? new Resend(apiKey) : null;
 
 export function isResendConfigured(): boolean {
   return !!apiKey;
+}
+
+export function resendFromEmail(): string {
+  return process.env.RESEND_FROM_EMAIL || "christian@leviosai.io";
 }
 
 export async function sendEmail(
@@ -22,7 +25,7 @@ export async function sendEmail(
 
   try {
     const { data, error } = await client.emails.send({
-      from: fromEmail,
+      from: resendFromEmail(),
       to,
       subject,
       text: body,

@@ -433,6 +433,10 @@ router.get("/api/admin/organizations", async (_req: Request, res: Response) => {
         id: organizations.id,
         name: organizations.name,
         createdAt: organizations.createdAt,
+        costPerAppointmentCents: organizations.costPerAppointmentCents,
+        monthlyFeeEnabled: organizations.monthlyFeeEnabled,
+        monthlyFeeOverrideCents: organizations.monthlyFeeOverrideCents,
+        appointmentFeeEnabled: organizations.appointmentFeeEnabled,
       })
       .from(organizations)
       .orderBy(desc(organizations.createdAt));
@@ -452,6 +456,201 @@ router.get("/api/admin/organizations", async (_req: Request, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Commercial pricing (global monthly + per-org appointment fees) ──────────
+
+router.get("/api/admin/commercial-pricing", async (_req: Request, res: Response) => {
+  try {
+    const {
+      getPlatformCommercialDefaults,
+    } = await import("../lib/commercial-pricing-service.js");
+    const defaults = await getPlatformCommercialDefaults();
+    res.json(defaults);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/api/admin/pricing/clients", async (_req: Request, res: Response) => {
+  try {
+    const {
+      getPlatformCommercialDefaults,
+      listPricingClients,
+    } = await import("../lib/commercial-pricing-service.js");
+    const [platform, clients] = await Promise.all([
+      getPlatformCommercialDefaults(),
+      listPricingClients(),
+    ]);
+    res.json({ platform, clients });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch("/api/admin/commercial-pricing", async (req: Request, res: Response) => {
+  try {
+    const {
+      updatePlatformCommercialDefaults,
+    } = await import("../lib/commercial-pricing-service.js");
+    const body = req.body || {};
+    const defaults = await updatePlatformCommercialDefaults({
+      monthlyFeeCents:
+        body.monthlyFeeCents != null ? Number(body.monthlyFeeCents) : undefined,
+      monthlyFeeEnabledByDefault:
+        body.monthlyFeeEnabledByDefault != null
+          ? !!body.monthlyFeeEnabledByDefault
+          : undefined,
+      defaultAppointmentFeeCents:
+        body.defaultAppointmentFeeCents != null
+          ? Number(body.defaultAppointmentFeeCents)
+          : undefined,
+    });
+    res.json(defaults);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.patch("/api/admin/organizations/:id/commercial-pricing", async (req: Request, res: Response) => {
+  try {
+    const orgId = Number(req.params.id);
+    if (!Number.isFinite(orgId) || orgId <= 0) {
+      return res.status(400).json({ error: "Invalid organization id" });
+    }
+    const {
+      updateOrgCommercialPricing,
+    } = await import("../lib/commercial-pricing-service.js");
+    const body = req.body || {};
+    const pricing = await updateOrgCommercialPricing(orgId, {
+      monthlyFeeEnabled:
+        "monthlyFeeEnabled" in body ? body.monthlyFeeEnabled : undefined,
+      monthlyFeeOverrideCents:
+        "monthlyFeeOverrideCents" in body ? body.monthlyFeeOverrideCents : undefined,
+      clearMonthlyOverride: !!body.clearMonthlyOverride,
+      appointmentFeeEnabled:
+        "appointmentFeeEnabled" in body ? body.appointmentFeeEnabled : undefined,
+      costPerAppointmentCents:
+        "costPerAppointmentCents" in body ? body.costPerAppointmentCents : undefined,
+    });
+    res.json(pricing);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/api/admin/organizations/:id/charges", async (req: Request, res: Response) => {
+  try {
+    const orgId = Number(req.params.id);
+    if (!Number.isFinite(orgId) || orgId <= 0) {
+      return res.status(400).json({ error: "Invalid organization id" });
+    }
+    const { listRecentAppointmentCharges } = await import("../lib/commercial-pricing-service.js");
+    const charges = await listRecentAppointmentCharges(orgId, Number(req.query.limit) || 50);
+    res.json({ charges });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/api/admin/payments", async (req: Request, res: Response) => {
+  try {
+    const {
+      listPlatformCharges,
+      summarizeCharges,
+    } = await import("../lib/commercial-pricing-service.js");
+    const periodRaw = (req.query.period as string) || "";
+    const yearRaw = (req.query.year as string) || "";
+    const startDate = (req.query.startDate as string) || "";
+    const endDate = (req.query.endDate as string) || "";
+    const period =
+      !startDate && !endDate && periodRaw && periodRaw !== "all" ? periodRaw : undefined;
+    const year =
+      !startDate && !endDate && !period && yearRaw && yearRaw !== "all" ? yearRaw : undefined;
+    const organizationId = req.query.organizationId
+      ? Number(req.query.organizationId)
+      : undefined;
+    const status = (req.query.status as string) || undefined;
+    const feeKind = (req.query.feeKind as string) || undefined;
+    const q = (req.query.q as string) || undefined;
+    const charges = await listPlatformCharges({
+      period,
+      year,
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+      organizationId: Number.isFinite(organizationId as number) ? organizationId : undefined,
+      status: status && status !== "all" ? status : undefined,
+      feeKind: feeKind && feeKind !== "all" ? feeKind : undefined,
+      q,
+      limit: Number(req.query.limit) || 500,
+    });
+    res.json({
+      period: period || null,
+      year: year ? Number(year) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      q: q || null,
+      charges,
+      summary: summarizeCharges(charges),
+      filters: {
+        period: period || "all",
+        year: year || "all",
+        startDate: startDate || "",
+        endDate: endDate || "",
+        status: status || "all",
+        feeKind: feeKind || "all",
+        q: q || "",
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/api/admin/payments/bill/:orgId", async (req: Request, res: Response) => {
+  try {
+    const orgId = Number(req.params.orgId);
+    if (!Number.isFinite(orgId) || orgId <= 0) {
+      return res.status(400).json({ error: "Invalid organization id" });
+    }
+    const {
+      getOrgMonthlyBill,
+      billingPeriodKey,
+    } = await import("../lib/commercial-pricing-service.js");
+    const period = (req.query.period as string) || billingPeriodKey();
+    const bill = await getOrgMonthlyBill(orgId, period);
+    res.json(bill);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get("/api/admin/payments/receipt/:id", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { getChargeReceipt } = await import("../lib/commercial-pricing-service.js");
+    const receipt = await getChargeReceipt(id);
+    if (!receipt) return res.status(404).json({ error: "Receipt not found" });
+    res.json(receipt);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch("/api/admin/payments/:id/status", async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const status = String(req.body?.status || "");
+    if (!["pending", "invoiced", "paid", "waived"].includes(status)) {
+      return res.status(400).json({ error: "status must be pending, invoiced, paid, or waived" });
+    }
+    const { updateChargeStatus } = await import("../lib/commercial-pricing-service.js");
+    const row = await updateChargeStatus(id, status as any);
+    if (!row) return res.status(404).json({ error: "Charge not found" });
+    res.json(row);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 

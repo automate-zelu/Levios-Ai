@@ -279,6 +279,39 @@ router.post("/api/appointments", requireAuth, async (req, res) => {
   }
 });
 
+async function handleAppointmentMutation(req: any, res: any, action: "cancel" | "reschedule" | "delete") {
+  try {
+    if (!req.organizationId) return res.status(400).json({ error: "No organization" });
+    const { mutateAppointmentWithCalendar } = await import("../lib/calendar/service.js");
+    const { parseScheduledAt } = await import("../lib/calendar/booking-helpers.js");
+    const body = req.body || {};
+    const notify = body.notify !== false && req.query?.notify !== "0";
+    const scheduledAt =
+      action === "reschedule" ? parseScheduledAt(body.scheduledAt) : undefined;
+    const result = await mutateAppointmentWithCalendar({
+      organizationId: req.organizationId,
+      appointmentId: parseInt(req.params.id, 10),
+      action,
+      scheduledAt: scheduledAt || undefined,
+      notify,
+      timezone: body.timezone,
+      durationMinutes: body.durationMinutes,
+    });
+    res.json(result);
+  } catch (error: any) {
+    const status = Number(error.status) || (error.message === "Appointment not found" ? 404 : 400);
+    res.status(status).json({ error: error.message });
+  }
+}
+
+router.post("/api/appointments/:id/cancel", requireAuth, (req, res) =>
+  handleAppointmentMutation(req, res, "cancel")
+);
+
+router.post("/api/appointments/:id/reschedule", requireAuth, (req, res) =>
+  handleAppointmentMutation(req, res, "reschedule")
+);
+
 router.patch("/api/appointments/:id", requireAuth, async (req, res) => {
   try {
     const appt = await storage.updateAppointment(
@@ -292,14 +325,9 @@ router.patch("/api/appointments/:id", requireAuth, async (req, res) => {
   }
 });
 
-router.delete("/api/appointments/:id", requireAuth, async (req, res) => {
-  try {
-    await storage.deleteAppointment(parseInt(req.params.id));
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+router.delete("/api/appointments/:id", requireAuth, (req, res) =>
+  handleAppointmentMutation(req, res, "delete")
+);
 
 // ─── CAMPAIGNS ──────────────────────────────────────────────────────────────
 

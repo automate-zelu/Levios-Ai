@@ -1,0 +1,358 @@
+/* SDR Agent — same ops desk language as SDR Setup, scoped to this page. */
+
+.sdr-agent {
+  --setup-ink: #f3ece4;
+  --setup-muted: #b7aaa0;
+  --setup-dim: #7a6f67;
+  --setup-panel: #171410;
+  --setup-panel-2: #1e1a16;
+  --setup-line: rgba(232, 196, 156, 0.12);
+  --setup-copper: #e08a3a;
+  --setup-phone: #2eb8a8;
+  --setup-mail: #6ea0e8;
+  --setup-cal: #d4b056;
+  --setup-ok: #4ecf8a;
+  --setup-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  color: var(--setup-ink);
+  max-width: 1080px;
+  padding-bottom: 32px;
+}
+
+.sdr-agent-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: #1a1612;
+  border: 1px solid var(--setup-line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.sdr-agent-toolbar-label {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--setup-copper);
+}
+
+.sdr-agent-toolbar .sdr-agent-actions {
+  margin: 0;
+}
+
+.sdr-agent-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--setup-panel);
+  border: 1px solid var(--setup-line);
+}
+
+.sdr-agent-hero-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--setup-muted);
+  max-width: 42ch;
+}
+
+.sdr-agent-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sdr-agent-btn {
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sdr-agent-btn--test {
+  background: #1a2420;
+  border: 1px solid rgba(78, 207, 138, 0.35);
+  color: #4ecf8a;
+}
+
+.sdr-agent-btn--test:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sdr-agent-btn:focus-visible {
+  outline: 2px solid var(--setup-copper);
+  outline-offset: 2px;
+}
+
+.sdr-agent-btn--ghost {
+  background: transparent;
+  color: var(--setup-ink);
+  border: 1px solid var(--setup-line);
+}
+
+.sdr-agent-btn--ghost:hover {
+  border-color: rgba(224, 138, 58, 0.5);
+}
+
+.sdr-agent-btn--primary {
+  background: linear-gradient(135deg, #e08a3a, #c45a1a);
+  color: #fff;
+  border: none;
+}
+
+.sdr-agent-btn--primary:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.sdr-agent-metrics {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  gap: 0;
+}
+
+.sdr-agent-metric {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+
+.sdr-agent-metric + .sdr-agent-metric {
+  border-left: 1px solid var(--setup-line);
+}
+
+.sdr-agent-metric span {
+  display: block;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--setup-dim);
+}
+
+.sdr-agent-metric strong {
+  font-family: Outfit, sans-serif;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.sdr-agent-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.sdr-agent-jump a {
+  text-decoration: none;
+  color: var(--setup-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--setup-line);
+  background: var(--setup-panel);
+}
+
+.sdr-agent-jump a:hover,
+.sdr-agent-jump a:focus-visible {
+  color: var(--setup-ink);
+  border-color: rgba(224, 138, 58, 0.45);
+  outline: none;
+}
+
+.sdr-agent .sdr-agent-usage {
+  margin-bottom: 28px;
+}
+
+.sdr-agent-msg {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--setup-line);
+  background: var(--setup-panel);
+  font-size: 13px;
+}
+
+.sdr-agent-workbench {
+  margin-bottom: 28px;
+}
+
+.sdr-agent-workbench-head {
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
+
+.sdr-agent-tone {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.sdr-agent-tone--prompt { color: var(--setup-copper); }
+.sdr-agent-tone--kb { color: #c48adf; }
+.sdr-agent-tone--sms { color: var(--setup-phone); }
+.sdr-agent-tone--mail { color: var(--setup-mail); }
+.sdr-agent-tone--time { color: var(--setup-cal); }
+
+.sdr-agent-workbench-head h2 {
+  font-family: Outfit, sans-serif;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+
+.sdr-agent-workbench-head p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--setup-muted);
+  max-width: 68ch;
+}
+
+.sdr-agent-panel {
+  background: var(--setup-panel);
+  border: 1px solid var(--setup-line);
+  border-radius: 16px;
+  padding: 22px;
+}
+
+.sdr-agent-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.sdr-agent-cal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--setup-panel);
+  border: 1px solid var(--setup-line);
+  position: relative;
+  overflow: hidden;
+}
+
+.sdr-agent-cal::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  background: var(--setup-cal);
+}
+
+.sdr-agent-cal strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 4px;
+  padding-left: 10px;
+}
+
+.sdr-agent-cal span {
+  display: block;
+  font-size: 13px;
+  color: var(--setup-muted);
+  padding-left: 10px;
+  line-height: 1.45;
+}
+
+.sdr-agent-chip {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--setup-line);
+  background: transparent;
+  color: var(--setup-ink);
+}
+
+.sdr-agent-chip--on {
+  background: rgba(224, 138, 58, 0.14);
+  border-color: rgba(224, 138, 58, 0.4);
+}
+
+.sdr-agent-hint {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(224, 138, 58, 0.1);
+  border: 1px solid rgba(224, 138, 58, 0.28);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sdr-agent-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--setup-muted);
+  margin: 0 0 12px;
+}
+
+.sdr-agent-meta {
+  font-size: 11px;
+  color: var(--setup-dim);
+  text-align: right;
+  margin-top: 6px;
+}
+
+.sdr-agent textarea,
+.sdr-agent input[type="number"],
+.sdr-agent input[type="text"] {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--setup-line);
+  background: #12100e;
+  color: var(--setup-ink);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.sdr-agent textarea:focus,
+.sdr-agent input:focus {
+  border-color: rgba(224, 138, 58, 0.5);
+}
+
+@media (max-width: 860px) {
+  .sdr-agent-split {
+    grid-template-columns: 1fr;
+  }
+  .sdr-agent-actions {
+    width: 100%;
+  }
+}

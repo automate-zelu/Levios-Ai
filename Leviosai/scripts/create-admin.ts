@@ -15,6 +15,7 @@ import bcrypt from "bcryptjs";
 import { db } from "../lib/db.js";
 import { users, organizations, workspaces } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
+import { ensureOrgSdr } from "../lib/org-tenant.js";
 import readline from "readline";
 
 // ─── CLI ARGS ────────────────────────────────────────────────────────────────
@@ -110,11 +111,11 @@ async function main() {
     })
     .returning();
 
-  // Create workspace for the admin org (needed so JWT workspace fields resolve)
+  const sdr = await ensureOrgSdr(org.id);
   await db
-    .insert(workspaces)
-    .values({ organizationId: org.id, name: "Leviosai", tier: "enterprise", isActive: true })
-    .returning();
+    .update(workspaces)
+    .set({ name: "Leviosai", tier: "enterprise", isActive: true })
+    .where(eq(workspaces.id, sdr.workspaceId));
 
   console.log(`✅ Admin user created:`);
   console.log(`   Email:    ${newUser.email}`);

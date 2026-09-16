@@ -136,7 +136,7 @@ describe("M7 evaluateEnrollmentEligibility", () => {
     assert.deepEqual(open, { ok: true, mode: "reenroll", enrollmentId: "e1" });
   });
 
-  it("blocks won/lost, opted_out, dnc, inactive workspace, lead limit", () => {
+  it("blocks won/lost, opted_out, dnc, and inactive workspace", () => {
     assert.equal(
       evaluateEnrollmentEligibility({
         lead: { status: "won" },
@@ -177,7 +177,7 @@ describe("M7 evaluateEnrollmentEligibility", () => {
         requireDormant: false,
         now,
       }).ok,
-      false
+      true
     );
   });
 

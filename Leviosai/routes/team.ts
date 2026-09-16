@@ -6,13 +6,15 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { requireAuth } from "./auth.js";
 import { db } from "../lib/db.js";
-import { users, workspaces } from "../lib/schema.js";
+import { users, workspaces, organizations } from "../lib/schema.js";
 import { eq, count } from "drizzle-orm";
 import { canInviteSeat, getTierLimits } from "../lib/tiers.js";
+import { ensureOrgSdr } from "../lib/org-tenant.js";
 
 const router = Router();
 
 async function getOrgWorkspace(organizationId: number) {
+  await ensureOrgSdr(organizationId);
   const [ws] = await db
     .select()
     .from(workspaces)
@@ -108,6 +110,34 @@ router.post("/api/workspace/invite", requireAuth, async (req: Request, res: Resp
         role: users.role,
         organizationId: users.organizationId,
       });
+
+    void (async () => {
+      const [inviter] = req.userId
+        ? await db
+            .select({ firstName: users.firstName, lastName: users.lastName })
+            .from(users)
+            .where(eq(users.id, req.userId))
+            .limit(1)
+        : [];
+      const [org] = await db
+        .select({ name: organizations.name })
+        .from(organizations)
+        .where(eq(organizations.id, req.organizationId!))
+        .limit(1);
+      const { sendProductEmail } = await import("../lib/product-email.js");
+      const { inviteEmail } = await import("../lib/email-templates.js");
+      const inviterName = [inviter?.firstName, inviter?.lastName].filter(Boolean).join(" ") || "Your teammate";
+      await sendProductEmail(
+        created.email,
+        inviteEmail({
+          firstName: created.firstName,
+          inviterName,
+          organizationName: org?.name || "the team",
+          email: created.email,
+          temporaryPassword: password ? null : tempPassword,
+        })
+      );
+    })().catch((err: Error) => console.error("Invite email failed:", err.message));
 
     res.status(201).json({
       user: created,

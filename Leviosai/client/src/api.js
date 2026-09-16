@@ -5,6 +5,8 @@ function getToken() {
   return localStorage.getItem("catalyst_token");
 }
 
+export { getToken };
+
 export function setToken(token) {
   localStorage.setItem("catalyst_token", token);
 }
@@ -81,7 +83,21 @@ export const appointmentsApi = {
   },
   create: (data) => request("/api/appointments", { method: "POST", body: JSON.stringify(data) }),
   update: (id, data) => request(`/api/appointments/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  delete: (id) => request(`/api/appointments/${id}`, { method: "DELETE" }),
+  delete: (id, opts = {}) =>
+    request(`/api/appointments/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ notify: opts.notify !== false, timezone: opts.timezone }),
+    }),
+  cancel: (id, opts = {}) =>
+    request(`/api/appointments/${id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ notify: opts.notify !== false, timezone: opts.timezone }),
+    }),
+  reschedule: (id, data) =>
+    request(`/api/appointments/${id}/reschedule`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 // Campaigns
@@ -212,6 +228,26 @@ export const sdrApi = {
   getConfig: () => request("/api/sdr/config"),
   saveConfig: (data) => request("/api/sdr/config", { method: "PUT", body: JSON.stringify(data) }),
   saveVoice: (assistantVoiceId) => request("/api/sdr/config/voice", { method: "PATCH", body: JSON.stringify({ assistantVoiceId }) }),
+  uploadKb: async (files) => {
+    const token = getToken();
+    const body = new FormData();
+    for (const file of files) body.append("files", file);
+    const res = await fetch("/api/sdr/kb/upload", {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body,
+    });
+    if (res.status === 401) {
+      clearToken();
+      window.location.reload();
+      throw new Error("Session expired");
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || "Upload failed");
+    }
+    return res.json();
+  },
   setStatus: (isActive) => request("/api/sdr/config/status", { method: "PATCH", body: JSON.stringify({ isActive }) }),
   getEnrollments: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
@@ -220,7 +256,11 @@ export const sdrApi = {
   getEnrollment: (id) => request(`/api/sdr/enrollments/${id}`),
   getLeadLogs: (leadId) => request(`/api/sdr/leads/${leadId}/logs`),
   getAnalytics: () => request("/api/sdr/analytics"),
+  getTestCredits: () => request("/api/sdr/test-credits"),
+  getVoiceStack: () => request("/api/sdr/voice-stack"),
+  saveVoiceStack: (data) => request("/api/sdr/voice-stack", { method: "PATCH", body: JSON.stringify(data) }),
   enrollLead: (leadId) => request(`/api/sdr/enroll/${leadId}`, { method: "POST", body: JSON.stringify({}) }),
+  startTestCall: (data) => request("/api/sdr/test-call", { method: "POST", body: JSON.stringify(data) }),
 };
 
 // AI Calling
@@ -230,7 +270,10 @@ export const callApi = {
     return request(`/api/call/sessions${qs ? `?${qs}` : ""}`);
   },
   getSession: (id) => request(`/api/call/sessions/${id}`),
+  getLive: () => request("/api/call/live"),
+  getLiveSession: (id) => request(`/api/call/live/${id}`),
   getVoices: () => request("/api/call/voices"),
+  getVoice: (voiceId) => request(`/api/call/voices/${encodeURIComponent(voiceId)}`),
   getAnalytics: () => request("/api/call/analytics"),
 };
 
@@ -238,7 +281,7 @@ export const callApi = {
 export const billingApi = {
   getStatus: () => request("/api/billing"),
   getPlans: () => request("/api/billing/plans"),
-  checkout: (plan, successUrl, cancelUrl) =>
+  checkout: (plan = "monthly", successUrl, cancelUrl) =>
     request("/api/billing/checkout", {
       method: "POST",
       body: JSON.stringify({ plan, successUrl, cancelUrl }),
@@ -252,6 +295,27 @@ export const billingApi = {
     request("/api/billing/cancel-renewal", { method: "POST", body: "{}" }),
   resumeRenewal: () =>
     request("/api/billing/resume-renewal", { method: "POST", body: "{}" }),
+  getBill: (period) => {
+    const qs = period ? `?period=${encodeURIComponent(period)}` : "";
+    return request(`/api/billing/bill${qs}`);
+  },
+  getReceipts: (params = {}) => {
+    const qs = new URLSearchParams();
+    if (typeof params === "string") {
+      if (params) qs.set("period", params);
+    } else {
+      if (params.period) qs.set("period", params.period);
+      if (params.year) qs.set("year", String(params.year));
+      if (params.startDate) qs.set("startDate", params.startDate);
+      if (params.endDate) qs.set("endDate", params.endDate);
+      if (params.status) qs.set("status", params.status);
+      if (params.feeKind) qs.set("feeKind", params.feeKind);
+      if (params.q) qs.set("q", params.q);
+      if (params.limit) qs.set("limit", String(params.limit));
+    }
+    const q = qs.toString();
+    return request(`/api/billing/receipts${q ? `?${q}` : ""}`);
+  },
 };
 
 // Team / seats
@@ -330,5 +394,43 @@ export const adminApi = {
   releaseTwilio: (id, permanent = false) =>
     request(`/api/admin/workspaces/${id}/provision-twilio?permanent=${permanent ? "true" : "false"}`, {
       method: "DELETE",
+    }),
+  getCommercialPricing: () => request("/api/admin/commercial-pricing"),
+  getPricingClients: () => request("/api/admin/pricing/clients"),
+  saveCommercialPricing: (data) =>
+    request("/api/admin/commercial-pricing", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  saveOrgCommercialPricing: (orgId, data) =>
+    request(`/api/admin/organizations/${orgId}/commercial-pricing`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  getOrgCharges: (orgId, limit = 50) =>
+    request(`/api/admin/organizations/${orgId}/charges?limit=${limit}`),
+  getPayments: (params = {}) => {
+    const qs = new URLSearchParams();
+    if (params.period) qs.set("period", params.period);
+    if (params.year) qs.set("year", String(params.year));
+    if (params.startDate) qs.set("startDate", params.startDate);
+    if (params.endDate) qs.set("endDate", params.endDate);
+    if (params.organizationId) qs.set("organizationId", String(params.organizationId));
+    if (params.status) qs.set("status", params.status);
+    if (params.feeKind) qs.set("feeKind", params.feeKind);
+    if (params.q) qs.set("q", params.q);
+    if (params.limit) qs.set("limit", String(params.limit));
+    const q = qs.toString();
+    return request(`/api/admin/payments${q ? `?${q}` : ""}`);
+  },
+  getOrgBill: (orgId, period) => {
+    const qs = period ? `?period=${encodeURIComponent(period)}` : "";
+    return request(`/api/admin/payments/bill/${orgId}${qs}`);
+  },
+  getPaymentReceipt: (id) => request(`/api/admin/payments/receipt/${id}`),
+  setPaymentStatus: (id, status) =>
+    request(`/api/admin/payments/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
     }),
 };

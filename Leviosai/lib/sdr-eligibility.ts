@@ -1,6 +1,7 @@
 // ─── SDR ENROLLMENT ELIGIBILITY ───────────────────────────────────────────────
 // Pure helpers for dormant-scan + manual enroll (Module 7).
-// Validates tier skip, re-enrollment gate after re_enroll_days, and lead filters.
+// Validates re-enrollment gate after re_enroll_days, and lead filters.
+// Commercial pricing has no monthly lead caps; leftover limit helpers are unused by enroll.
 
 import type { EnrollmentStatus } from "./schema.js";
 import { isLeadLimitReached } from "./tiers.js";
@@ -143,16 +144,6 @@ export function evaluateEnrollmentEligibility(opts: {
 
   if (ws && ws.isActive === false) {
     return { ok: false, reason: "workspace_inactive" };
-  }
-
-  if (
-    ws &&
-    shouldSkipWorkspaceForLeadLimit(
-      Number(ws.monthlyLeadsUsed ?? 0),
-      Number(ws.monthlyLeadLimit ?? 0)
-    )
-  ) {
-    return { ok: false, reason: "lead_limit" };
   }
 
   const leadStatus = (lead.status || "").toLowerCase();

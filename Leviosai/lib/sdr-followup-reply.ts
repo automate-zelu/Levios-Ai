@@ -49,11 +49,11 @@ function escapeXml(s: string): string {
 export function classifyIntentHeuristic(text: string): FollowupIntent {
   const t = (text || "").toLowerCase().trim();
   if (!t) return "other";
-  if (/\b(yes|yeah|yep|sure|ok|okay|absolutely|definitely|sounds good|i'?d love|love to|interested|let'?s do|book|schedule|works for me)\b/.test(t)) {
-    return "agree";
-  }
   if (/\b(no|nope|not interested|stop|unsubscribe|don'?t|do not|remove|leave me alone|busy|wrong number)\b/.test(t)) {
     return "disagree";
+  }
+  if (/\b(yes|yeah|yep|sure|ok|okay|absolutely|definitely|sounds good|i'?d love|love to|interested|let'?s do|book|schedule|works for me)\b/.test(t)) {
+    return "agree";
   }
   if (/\?|how|when|what|who|where|why|can you|could you|available/.test(t)) {
     return "question";
@@ -88,18 +88,279 @@ function heuristicReply(intent: FollowupIntent, firstName: string, company: stri
   }
 }
 
-/** Pull an ISO datetime from free text when the lead names a slot. */
-export async function extractScheduledAtFromText(text: string): Promise<Date | null> {
+async function resolveOrgId(workspaceId: string): Promise<number | null> {
+  const [ws] = await db
+    .select({ organizationId: workspaces.organizationId })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  return ws?.organizationId ?? null;
+}
+
+export function wantsSchedulingHelp(text: string, intent: FollowupIntent): boolean {
+  if (intent === "agree") return true;
+  const t = (text || "").toLowerCase();
+  return /\b(available|availability|schedule|book|meeting|call|slot|time|when can|what times)\b/.test(t);
+}
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  sun: 0, sunday: 0,
+  mon: 1, monday: 1,
+  tue: 2, tues: 2, tuesday: 2,
+  wed: 3, wednesday: 3,
+  thu: 4, thur: 4, thurs: 4, thursday: 4,
+  fri: 5, friday: 5,
+  sat: 6, saturday: 6,
+};
+
+function tzOffsetMs(date: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(date).map((p) => [p.type, p.value]));
+  const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    hour,
+    Number(parts.minute),
+    Number(parts.second)
+  );
+  return asUtc - date.getTime();
+}
+
+function zonedWallToUtc(
+  timeZone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number
+): Date {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  let date = new Date(utcGuess);
+  date = new Date(utcGuess - tzOffsetMs(date, timeZone));
+  return new Date(utcGuess - tzOffsetMs(date, timeZone));
+}
+
+function partsInZone(now: Date, timeZone: string) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  });
+  const p = Object.fromEntries(dtf.formatToParts(now).map((x) => [x.type, x.value]));
+  const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    year: Number(p.year),
+    month: Number(p.month),
+    day: Number(p.day),
+    hour: p.hour === "24" ? 0 : Number(p.hour),
+    minute: Number(p.minute),
+    weekday: map[p.weekday] ?? 0,
+  };
+}
+
+function parseClock(rawHour: string, rawMin: string | undefined, ampm: string | undefined): { h: number; m: number } | null {
+  let h = Number(rawHour);
+  const m = rawMin ? Number(rawMin) : 0;
+  if (!Number.isFinite(h) || !Number.isFinite(m) || m > 59) return null;
+  const mer = (ampm || "").toLowerCase();
+  if (mer === "pm" && h < 12) h += 12;
+  if (mer === "am" && h === 12) h = 0;
+  if (h > 23) return null;
+  return { h, m };
+}
+
+/**
+ * Parse a concrete local appointment time from SMS/email without calling the LLM.
+ * Examples: "Tue 3pm", "tomorrow at 10:30 am", "Monday 2:00 PM".
+ */
+export function parseLooseAppointmentTime(
+  text: string,
+  now = new Date(),
+  timeZone = "America/New_York"
+): Date | null {
   const raw = String(text || "").trim();
   if (!raw) return null;
 
-  // Direct ISO / obvious datetime
   const iso = raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
   if (iso) {
     const d = new Date(iso[0]);
-    if (!Number.isNaN(d.getTime()) && d.getTime() > Date.now() - 60_000) return d;
+    if (!Number.isNaN(d.getTime()) && d.getTime() > now.getTime() - 60_000) return d;
   }
 
+  const clock = raw.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if (!clock) return null;
+  const hm = parseClock(clock[1], clock[2], clock[3]);
+  if (!hm) return null;
+
+  const local = partsInZone(now, timeZone);
+  const lower = raw.toLowerCase();
+  let year = local.year;
+  let month = local.month;
+  let day = local.day;
+
+  if (/\btomorrow\b/.test(lower)) {
+    const t = zonedWallToUtc(timeZone, year, month, day, 12, 0);
+    const next = new Date(t.getTime() + 24 * 60 * 60 * 1000);
+    const n = partsInZone(next, timeZone);
+    year = n.year;
+    month = n.month;
+    day = n.day;
+  } else {
+    const dayMatch = lower.match(
+      /\b(sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?)\b/
+    );
+    if (dayMatch) {
+      const token = dayMatch[1];
+      const key = token.startsWith("tue") ? "tue" : token.startsWith("thu") ? "thu" : token.slice(0, 3);
+      const target = WEEKDAY_INDEX[key];
+      let delta = (target - local.weekday + 7) % 7;
+      if (delta === 0) {
+        const todayAt = zonedWallToUtc(timeZone, year, month, day, hm.h, hm.m);
+        if (todayAt.getTime() <= now.getTime() + 60_000) delta = 7;
+      }
+      const t = zonedWallToUtc(timeZone, year, month, day, 12, 0);
+      const next = new Date(t.getTime() + delta * 24 * 60 * 60 * 1000);
+      const n = partsInZone(next, timeZone);
+      year = n.year;
+      month = n.month;
+      day = n.day;
+    } else if (!/\btoday\b/.test(lower)) {
+      return null;
+    }
+  }
+
+  const when = zonedWallToUtc(timeZone, year, month, day, hm.h, hm.m);
+  if (when.getTime() <= now.getTime() - 60_000) return null;
+  return when;
+}
+
+export type FollowupScheduleDecision = {
+  reply: string;
+  bookedAppt: boolean;
+  calendarSynced: boolean;
+  scheduledAt?: string;
+  syncError?: string;
+};
+
+export type FollowupAvailabilityView = {
+  connected: boolean;
+  error?: string;
+  slots: Array<{ start: string; end: string; label: string }>;
+  prefs?: { offerCount?: number; daysAhead?: number };
+};
+
+/** Pure SMS/email calendar reply mapper — unit-tested without Twilio/Google. */
+export function mapFollowupScheduleReply(opts: {
+  channel: "sms" | "email";
+  firstName: string;
+  companyName: string;
+  draftReply: string;
+  intent: FollowupIntent;
+  inboundText: string;
+  extractedAt: Date | null;
+  bookResult: { appointmentId?: number | string | null; synced: boolean; syncError?: string } | null;
+  availability: FollowupAvailabilityView | null;
+  timezone?: string;
+}): FollowupScheduleDecision {
+  const name = (opts.firstName || "").trim() || "there";
+  const brand = (opts.companyName || "").trim() || "our team";
+  const sms = opts.channel === "sms";
+
+  if (!wantsSchedulingHelp(opts.inboundText, opts.intent)) {
+    return { reply: opts.draftReply, bookedAppt: false, calendarSynced: false };
+  }
+
+  if (opts.extractedAt && opts.bookResult?.appointmentId) {
+    const whenLabel = opts.extractedAt.toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: opts.timezone || "America/New_York",
+    });
+    const syncNote = opts.bookResult.synced ? "" : " I'll sync Google Calendar shortly.";
+    const reply = sms
+      ? `You're booked, ${name}! ${whenLabel} is locked in.${syncNote} Talk soon — ${brand}.`
+      : `Hi ${name},\n\nYou're confirmed for ${whenLabel}.${syncNote}\n\nLooking forward to speaking,\n${brand}`;
+    return {
+      reply: reply.replace(/ \./g, ".").replace(/\s{2,}/g, " ").trim(),
+      bookedAppt: true,
+      calendarSynced: Boolean(opts.bookResult.synced),
+      scheduledAt: opts.extractedAt.toISOString(),
+      syncError: opts.bookResult.synced ? undefined : opts.bookResult.syncError,
+    };
+  }
+
+  if (opts.extractedAt && opts.bookResult && !opts.bookResult.appointmentId) {
+    const fail = sms
+      ? `${name}, booking failed on our side — please try another time that works.`
+      : `Hi ${name},\n\nBooking failed on our side just now. Please reply with another time.\n\nBest,\n${brand}`;
+    return {
+      reply: fail,
+      bookedAppt: false,
+      calendarSynced: false,
+      scheduledAt: opts.extractedAt.toISOString(),
+      syncError: opts.bookResult.syncError,
+    };
+  }
+
+  const slots = opts.availability?.slots || [];
+  const offerCount = opts.availability?.prefs?.offerCount ?? 3;
+  const offered = slots.slice(0, offerCount);
+  if (offered.length) {
+    const slotText = offered.map((s) => s.label).join("; ");
+    const reply = sms
+      ? `Great, ${name}! Open times: ${slotText}. Reply with the one you want and I'll book it.`
+      : `Hi ${name},\n\nHere are open times:\n\n${offered.map((s) => `• ${s.label}`).join("\n")}\n\nReply with the slot you want and I'll book it.\n\nBest,\n${brand}`;
+    return { reply, bookedAppt: false, calendarSynced: !opts.availability?.error };
+  }
+
+  const daysAhead = opts.availability?.prefs?.daysAhead ?? 5;
+  if (opts.availability && !opts.availability.error) {
+    const none = sms
+      ? `${name}, I don't have open slots in the next ${daysAhead} days. Reply with a preferred day/time and I'll check again.`
+      : `Hi ${name},\n\nI don't have open slots in the next ${daysAhead} days. Reply with a preferred day or time window and I'll check again.\n\nBest,\n${brand}`;
+    return { reply: none, bookedAppt: false, calendarSynced: true };
+  }
+
+  const fail = sms
+    ? `Thanks ${name}! Reply with a couple of times that work (for example Tue 3pm) and I'll lock one in.`
+    : `Hi ${name},\n\nThanks for getting back. Please reply with a couple of times that work and I'll lock one in.\n\nBest,\n${brand}`;
+  return {
+    reply: fail,
+    bookedAppt: false,
+    calendarSynced: false,
+    syncError: opts.availability?.error,
+  };
+}
+
+/** Pull an ISO datetime from free text when the lead names a slot. */
+export async function extractScheduledAtFromText(
+  text: string,
+  now = new Date(),
+  timeZone = "America/New_York"
+): Promise<Date | null> {
+  const heuristic = parseLooseAppointmentTime(text, now, timeZone);
+  if (heuristic) return heuristic;
+
+  const raw = String(text || "").trim();
+  if (!raw) return null;
   if (!process.env.OPENAI_API_KEY) return null;
 
   try {
@@ -117,32 +378,18 @@ export async function extractScheduledAtFromText(text: string): Promise<Date | n
     const structured = llm.withStructuredOutput(schema);
     const result = await structured.invoke(
       `Extract a specific future appointment datetime from this message if clearly stated. ` +
-        `Today is ${new Date().toISOString()}. Return null if only vague interest with no time.\n\nMessage:\n${raw}`
+        `Today is ${now.toISOString()}. Timezone ${timeZone}. Return null if only vague interest with no time.\n\nMessage:\n${raw}`
     );
     if (!result.scheduledAt) return null;
     const d = new Date(result.scheduledAt);
-    if (Number.isNaN(d.getTime()) || d.getTime() < Date.now() - 60_000) return null;
+    if (Number.isNaN(d.getTime()) || d.getTime() < now.getTime() - 60_000) return null;
     return d;
   } catch {
     return null;
   }
 }
 
-async function resolveOrgId(workspaceId: string): Promise<number | null> {
-  const [ws] = await db
-    .select({ organizationId: workspaces.organizationId })
-    .from(workspaces)
-    .where(eq(workspaces.id, workspaceId));
-  return ws?.organizationId ?? null;
-}
-
-function wantsSchedulingHelp(text: string, intent: FollowupIntent): boolean {
-  if (intent === "agree") return true;
-  const t = (text || "").toLowerCase();
-  return /\b(available|availability|schedule|book|meeting|call|slot|time|when can|what times)\b/.test(t);
-}
-
-/** Book if a concrete time is present; otherwise offer real open slots from the calendar. */
+/** Book if a concrete time is present; otherwise offer open slots (FreeBusy or working-hours fallback). */
 export async function resolveFollowupScheduling(opts: {
   workspaceId: string;
   leadId: number;
@@ -152,27 +399,19 @@ export async function resolveFollowupScheduling(opts: {
   firstName: string;
   companyName: string;
   draftReply: string;
-}): Promise<{
-  reply: string;
-  bookedAppt: boolean;
-  calendarSynced: boolean;
-  scheduledAt?: string;
-  syncError?: string;
-}> {
-  const name = (opts.firstName || "").trim() || "there";
-  const brand = (opts.companyName || "").trim() || "our team";
+}): Promise<FollowupScheduleDecision> {
   const orgId = await resolveOrgId(opts.workspaceId);
 
   if (!orgId || !wantsSchedulingHelp(opts.inboundText, opts.intent)) {
     return { reply: opts.draftReply, bookedAppt: false, calendarSynced: false };
   }
 
-  const scheduledAt = await extractScheduledAtFromText(opts.inboundText);
+  const prefs = await getCalendarBookingPrefs(orgId);
+  const scheduledAt = await extractScheduledAtFromText(opts.inboundText, new Date(), prefs.timezone);
 
   if (scheduledAt) {
     try {
       const lead = await storage.getLead(opts.leadId);
-      const prefs = await getCalendarBookingPrefs(orgId);
       const result = await bookAppointmentWithCalendar({
         organizationId: orgId,
         leadId: opts.leadId,
@@ -186,95 +425,72 @@ export async function resolveFollowupScheduling(opts: {
         description: `Booked via ${opts.channel} follow-up`,
         timezone: prefs.timezone,
       });
-
-      const whenLabel = scheduledAt.toLocaleString("en-US", {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        timeZone: prefs.timezone,
+      return mapFollowupScheduleReply({
+        channel: opts.channel,
+        firstName: opts.firstName,
+        companyName: opts.companyName,
+        draftReply: opts.draftReply,
+        intent: opts.intent,
+        inboundText: opts.inboundText,
+        extractedAt: scheduledAt,
+        bookResult: {
+          appointmentId: result.appointmentId,
+          synced: result.synced,
+          syncError: result.syncError,
+        },
+        availability: null,
+        timezone: prefs.timezone,
       });
-
-      if (result.synced) {
-        const reply =
-          opts.channel === "sms"
-            ? `You're booked, ${name}! ${whenLabel} is locked on our calendar. Talk soon — ${brand}.`
-            : `Hi ${name},\n\nYou're confirmed for ${whenLabel}. I've added it to our calendar.\n\nLooking forward to speaking,\n${brand}`;
-        return {
-          reply,
-          bookedAppt: true,
-          calendarSynced: true,
-          scheduledAt: scheduledAt.toISOString(),
-        };
-      }
-
-      const failReply =
-        opts.channel === "sms"
-          ? `${name}, I couldn't lock that time on the calendar just now (${result.syncError || "sync failed"}). Please try again later or reply with another time.`
-          : `Hi ${name},\n\nI wasn't able to save that appointment on the calendar right now${result.syncError ? ` (${result.syncError})` : ""}. Please try again later or reply with another time and I'll book it.\n\nBest,\n${brand}`;
-      return {
-        reply: failReply,
-        bookedAppt: false,
-        calendarSynced: false,
-        scheduledAt: scheduledAt.toISOString(),
-        syncError: result.syncError,
-      };
     } catch (err: any) {
       console.warn(`Follow-up calendar book failed: ${err?.message || err}`);
-      const failReply =
-        opts.channel === "sms"
-          ? `${name}, booking failed on our side — please try again later or send another time that works.`
-          : `Hi ${name},\n\nBooking failed on our side just now. Please try again later or reply with another time.\n\nBest,\n${brand}`;
-      return {
-        reply: failReply,
-        bookedAppt: false,
-        calendarSynced: false,
-        syncError: err?.message,
-      };
+      return mapFollowupScheduleReply({
+        channel: opts.channel,
+        firstName: opts.firstName,
+        companyName: opts.companyName,
+        draftReply: opts.draftReply,
+        intent: opts.intent,
+        inboundText: opts.inboundText,
+        extractedAt: scheduledAt,
+        bookResult: { appointmentId: null, synced: false, syncError: err?.message },
+        availability: null,
+        timezone: prefs.timezone,
+      });
     }
   }
 
-  // No concrete time — check live availability and offer real slots
   try {
-    const prefs = await getCalendarBookingPrefs(orgId);
     const avail = await getCalendarAvailability({ organizationId: orgId });
-    if (!avail.connected || avail.error) {
-      const failReply =
-        opts.channel === "sms"
-          ? `Thanks ${name}! I'm having trouble reading the calendar right now — reply with a couple of times that work, or try again later.`
-          : `Hi ${name},\n\nThanks for getting back. I'm having trouble reading the calendar right now. Please reply with a couple of times that work, or try again later and I'll lock one in.\n\nBest,\n${brand}`;
-      return {
-        reply: failReply,
-        bookedAppt: false,
-        calendarSynced: false,
-        syncError: avail.error,
-      };
-    }
-
-    const offered = avail.slots.slice(0, prefs.offerCount);
-    if (!offered.length) {
-      const noneReply =
-        opts.channel === "sms"
-          ? `${name}, I don't have open slots in the next ${prefs.daysAhead} days. Reply with a preferred day/time and I'll check again.`
-          : `Hi ${name},\n\nI don't have open slots in the next ${prefs.daysAhead} days on our calendar. Reply with a preferred day or time window and I'll check again.\n\nBest,\n${brand}`;
-      return { reply: noneReply, bookedAppt: false, calendarSynced: true };
-    }
-
-    const slotText = offered.map((s) => s.label).join("; ");
-    const offerReply =
-      opts.channel === "sms"
-        ? `Great, ${name}! Open times: ${slotText}. Reply with the one you want and I'll book it.`
-        : `Hi ${name},\n\nHere are real open times on our calendar:\n\n${offered.map((s) => `• ${s.label}`).join("\n")}\n\nReply with the slot you want and I'll book it right away.\n\nBest,\n${brand}`;
-    return { reply: offerReply, bookedAppt: false, calendarSynced: true };
+    return mapFollowupScheduleReply({
+      channel: opts.channel,
+      firstName: opts.firstName,
+      companyName: opts.companyName,
+      draftReply: opts.draftReply,
+      intent: opts.intent,
+      inboundText: opts.inboundText,
+      extractedAt: null,
+      bookResult: null,
+      availability: {
+        connected: avail.connected,
+        error: avail.error,
+        slots: avail.slots,
+        prefs: avail.prefs || prefs,
+      },
+      timezone: prefs.timezone,
+    });
   } catch (err: any) {
     console.warn(`Follow-up availability check failed: ${err?.message || err}`);
-    return {
-      reply: opts.draftReply,
-      bookedAppt: false,
-      calendarSynced: false,
-      syncError: err?.message,
-    };
+    return mapFollowupScheduleReply({
+      channel: opts.channel,
+      firstName: opts.firstName,
+      companyName: opts.companyName,
+      draftReply: opts.draftReply,
+      intent: opts.intent,
+      inboundText: opts.inboundText,
+      extractedAt: null,
+      bookResult: null,
+      availability: { connected: false, error: err?.message, slots: [], prefs },
+      timezone: prefs.timezone,
+    });
   }
 }
 

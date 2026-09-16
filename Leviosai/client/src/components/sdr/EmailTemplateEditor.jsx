@@ -2,19 +2,21 @@ import { useState } from "react";
 import { COLORS, S } from "../../theme.js";
 import { TemplateVariableField } from "./TemplateVariableField.jsx";
 import { renderTemplatePreview } from "./templateVars.js";
+import "./template-preview.css";
 
-export function EmailTemplateEditor({ subject, body, onSubjectChange, onBodyChange }) {
+export function EmailTemplateEditor({ subject, body, onSubjectChange, onBodyChange, bare = false }) {
   const [preview, setPreview] = useState(false);
   const previewSubject = renderTemplatePreview(subject || "");
   const previewBody = renderTemplatePreview(body || "");
 
   return (
-    <div style={S.card}>
-      <div style={S.cardHeader}>
-        <span>Email Follow-up Template</span>
+    <div style={bare ? undefined : S.card}>
+      <div style={bare ? { display: "flex", justifyContent: "flex-end", marginBottom: 10 } : S.cardHeader}>
+        {!bare && <span>Email Follow-up Template</span>}
         <button
           type="button"
-          style={{ ...S.btn("ghost"), padding: "4px 12px", fontSize: 12 }}
+          className={bare ? "sdr-agent-btn sdr-agent-btn--ghost" : undefined}
+          style={bare ? { padding: "6px 12px" } : { ...S.btn("ghost"), padding: "4px 12px", fontSize: 12 }}
           onClick={() => setPreview((p) => !p)}
         >
           {preview ? "Edit" : "Preview"}
@@ -22,11 +24,15 @@ export function EmailTemplateEditor({ subject, body, onSubjectChange, onBodyChan
       </div>
 
       {preview ? (
-        <div style={{ padding: 16, borderRadius: 8, background: COLORS.surfaceAlt, border: `1px solid ${COLORS.border}` }}>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6 }}>Subject</div>
-          <div style={{ fontWeight: 600, marginBottom: 14 }}>{previewSubject || "—"}</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6 }}>Body</div>
-          <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{previewBody || "—"}</div>
+        <div className="sdr-agent-preview">
+          <div className="sdr-agent-preview-field">
+            <span className="sdr-agent-preview-kicker">Subject</span>
+            <div className="sdr-agent-preview-subject">{previewSubject || "—"}</div>
+          </div>
+          <div className="sdr-agent-preview-field">
+            <span className="sdr-agent-preview-kicker">Body</span>
+            <div className="sdr-agent-preview-body">{previewBody || "—"}</div>
+          </div>
         </div>
       ) : (
         <>

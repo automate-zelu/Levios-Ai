@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
+import { gmailApi, calendarApi } from "../api.js";
 import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
 import GmailConnectCard from "../components/sdr/GmailConnectCard.jsx";
+import { CalendarToolsPanel } from "../components/sdr/CalendarToolsPanel.jsx";
+import AgentStack from "../components/sdr/AgentStack.jsx";
+import "./sdr-setup.css";
 
 const PIPELINE_STEPS = [
   {
@@ -51,59 +55,26 @@ const FLOW_CHIPS = [
   "Booked or Exhausted",
 ];
 
-function SetupSection({ step, title, subtitle, children }) {
+function SetupSection({ id, tone, title, subtitle, children, split = false, bare = false }) {
   return (
-    <section style={{ ...S.card, marginBottom: 20 }}>
-      <div style={{ display: "flex", gap: 14, alignItems: "flex-start", marginBottom: 16 }}>
-        <div
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            background: COLORS.orangeGlow,
-            border: `1px solid ${COLORS.orange}55`,
-            color: COLORS.orange,
-            fontWeight: 700,
-            fontSize: 14,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-          }}
-        >
-          {step}
-        </div>
+    <section className="sdr-setup-workbench" id={id}>
+      <div className="sdr-setup-workbench-head">
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{title}</div>
-          <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.45 }}>{subtitle}</div>
+          <div className={`sdr-setup-tone sdr-setup-tone--${tone}`}>{tone}</div>
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
         </div>
       </div>
-      {children}
+      {bare ? children : <div className={`sdr-setup-panel${split ? " sdr-setup-split" : ""}`}>{children}</div>}
     </section>
   );
 }
 
-function ShortcutCard({ icon, title, description, cta, onClick }) {
+function StatusPill({ ok }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        textAlign: "left",
-        padding: 16,
-        borderRadius: 10,
-        border: `1px solid ${COLORS.border}`,
-        background: COLORS.surfaceAlt,
-        cursor: "pointer",
-        color: "inherit",
-        fontFamily: "inherit",
-      }}
-    >
-      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontSize: 14, fontWeight: 650, marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.45, marginBottom: 10 }}>{description}</div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.orange }}>{cta}</div>
-    </button>
+    <span className={`sdr-setup-pill ${ok ? "sdr-setup-pill--on" : "sdr-setup-pill--off"}`}>
+      {ok ? "Live" : "Off"}
+    </span>
   );
 }
 
@@ -237,7 +208,7 @@ function HowSdrWorksModal({ open, onClose, onNavigate }) {
           <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 8 }}>Where to configure each piece</div>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.7 }}>
             <li>
-              <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio (Account SID + Auth Token) and Gmail for email
+              <strong style={{ color: COLORS.text }}>This page (SDR Setup)</strong> — Twilio, Gmail, Google Calendar, and booking window
             </li>
             <li>
               <strong style={{ color: COLORS.text }}>SDR Agent</strong> — single system prompt (incl. objections), knowledge base, SMS/email templates, thresholds, activate
@@ -351,14 +322,15 @@ function TwilioSetupModal({ open, onClose }) {
 }
 
 /**
- * SDR Setup — how-it-works guide + phone (Twilio) and links to voice/prompt config.
- * Calendar / Meet booking UI is commented out (not in SOW/plan scope).
+ * SDR Setup — channels (Twilio, Gmail, Calendar) + booking rules + links to agent content.
  */
 export default function SDRSetupPage() {
   const navigate = useNavigate();
   const [howOpen, setHowOpen] = useState(false);
   const [twilioOpen, setTwilioOpen] = useState(false);
   const [twilioStatus, setTwilioStatus] = useState(null);
+  const [gmailStatus, setGmailStatus] = useState(null);
+  const [calendarStatus, setCalendarStatus] = useState(null);
 
   useEffect(() => {
     const token = localStorage.getItem("catalyst_token");
@@ -369,134 +341,136 @@ export default function SDRSetupPage() {
       .then((r) => r.json())
       .then(setTwilioStatus)
       .catch(() => {});
+    gmailApi.status().then(setGmailStatus).catch(() => {});
+    calendarApi.status().then(setCalendarStatus).catch(() => {});
   }, [twilioOpen]);
 
+  useEffect(() => {
+    const id = window.location.hash.replace("#", "");
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const calendarConn = calendarStatus?.connections?.find((c) => c.provider === calendarStatus?.activeProvider);
+  const calendarOk = !!calendarStatus?.activeProvider;
+  const phoneOk = !!twilioStatus?.connected;
+  const mailOk = !!gmailStatus?.connected;
+  const readyCount = [phoneOk, mailOk, calendarOk].filter(Boolean).length;
+
   return (
-    <div>
-      <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>SDR Setup</h2>
-          <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0", maxWidth: 760, lineHeight: 1.5 }}>
-            Connect services for the AI voice agent, then follow the locked call → SMS → email pipeline.
-            Conversation behavior is one system prompt — not separate talk-track or objection modules.
-          </p>
+    <div className="sdr-setup">
+      <header className="sdr-setup-hero">
+        <div className="sdr-setup-hero-top">
+          <div>
+            <div className="sdr-setup-kicker">Outbound desk</div>
+            <h1>SDR Setup</h1>
+            <p>
+              Wire the three channels the agent uses on a live sequence. Prompt and voice stay on SDR Agent.
+            </p>
+          </div>
+          <button type="button" className="sdr-setup-how" onClick={() => setHowOpen(true)}>
+            How the pipeline works
+          </button>
         </div>
-        <button
-          type="button"
-          style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12, flexShrink: 0 }}
-          onClick={() => setHowOpen(true)}
-        >
-          How the AI SDR works
-        </button>
-      </div>
+        <div className="sdr-setup-ready">
+          <strong>{readyCount}/3</strong>
+          <span>channels connected — phone, email, and calendar</span>
+        </div>
+      </header>
+
+      <AgentStack />
 
       <HowSdrWorksModal open={howOpen} onClose={() => setHowOpen(false)} onNavigate={navigate} />
+      <TwilioSetupModal open={twilioOpen} onClose={() => setTwilioOpen(false)} />
 
-      <TwilioSetupModal
-        open={twilioOpen}
-        onClose={() => setTwilioOpen(false)}
-      />
-
-      <section style={{ ...S.card, marginBottom: 20 }}>
-        <button
-          type="button"
-          onClick={() => setTwilioOpen(true)}
-          style={{
-            width: "100%",
-            display: "flex",
-            gap: 14,
-            alignItems: "flex-start",
-            textAlign: "left",
-            background: "transparent",
-            border: "none",
-            padding: 0,
-            cursor: "pointer",
-            color: "inherit",
-            fontFamily: "inherit",
-          }}
-        >
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: COLORS.orangeGlow,
-              border: `1px solid ${COLORS.orange}55`,
-              color: COLORS.orange,
-              fontWeight: 700,
-              fontSize: 14,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
-            1
+      <div className="sdr-setup-board" aria-label="Channel status">
+        <button type="button" className="sdr-setup-channel sdr-setup-channel--phone" onClick={() => setTwilioOpen(true)}>
+          <div className="sdr-setup-channel-kind">Phone</div>
+          <div className="sdr-setup-channel-copy">
+            <strong>Calls & SMS</strong>
+            <p>
+              {phoneOk
+                ? twilioStatus.phoneNumber || "Twilio connected"
+                : "Connect Twilio and assign a number"}
+            </p>
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-              <div style={{ fontSize: 16, fontWeight: 700 }}>Phone & SMS (Twilio)</div>
-              {twilioStatus?.connected ? (
-                <span style={S.badge(COLORS.green)}>
-                  ✓ Connected{twilioStatus.phoneNumber ? ` · ${twilioStatus.phoneNumber}` : ""}
-                </span>
-              ) : twilioStatus ? (
-                <span style={{ fontSize: 11, color: COLORS.textDim }}>Not connected</span>
-              ) : null}
-            </div>
-            <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.45 }}>
-              Connect your Twilio account (Account SID + Auth Token) and assign a voice/SMS number.
-            </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.orange, marginTop: 10 }}>
-              {twilioStatus?.connected ? "Manage Twilio →" : "Connect Twilio →"}
-            </div>
-          </div>
+          <StatusPill ok={phoneOk} />
         </button>
-      </section>
+
+        <a href="#setup-email" className="sdr-setup-channel sdr-setup-channel--mail">
+          <div className="sdr-setup-channel-kind">Mail</div>
+          <div className="sdr-setup-channel-copy">
+            <strong>Follow-up email</strong>
+            <p>
+              {mailOk
+                ? gmailStatus.accountEmail || "Gmail connected"
+                : "Send from your Gmail, not a shared mailbox"}
+            </p>
+          </div>
+          <StatusPill ok={mailOk} />
+        </a>
+
+        <a href="#setup-calendar" className="sdr-setup-channel sdr-setup-channel--cal">
+          <div className="sdr-setup-channel-kind">Cal</div>
+          <div className="sdr-setup-channel-copy">
+            <strong>Bookings</strong>
+            <p>
+              {calendarOk
+                ? calendarConn?.accountEmail || "Google Calendar connected"
+                : "Connect Google Calendar for live availability"}
+            </p>
+          </div>
+          <StatusPill ok={calendarOk} />
+        </a>
+      </div>
 
       <SetupSection
-        step="2"
-        title="Email (Gmail)"
-        subtitle="Connect your Gmail so SDR follow-up emails send from your own account — n8n-style Google login, not a shared platform mailbox."
+        id="setup-email"
+        tone="mail"
+        title="Gmail"
+        subtitle="Sequence emails go out from this account after the call and SMS steps."
       >
         <GmailConnectCard />
       </SetupSection>
 
       <SetupSection
-        step="3"
-        title="Calendar (Google)"
-        subtitle="Same place as Twilio and Gmail — connect Google Calendar so the agent can check availability and book appointments."
+        id="setup-calendar"
+        tone="cal"
+        title="Calendar & booking window"
+        subtitle="Connect Google, pick the calendar, then set what the agent is allowed to offer on a call."
+        split
       >
-        <CalendarConnections colors={COLORS} styles={S} />
+        <div>
+          <CalendarConnections colors={COLORS} styles={S} />
+        </div>
+        <div>
+          <CalendarToolsPanel persistPrompt embedded />
+        </div>
       </SetupSection>
 
       <SetupSection
-        step="4"
+        tone="agent"
         title="Agent content"
-        subtitle="The live call agent is a single-prompt system. Set persona, objections, and KB on SDR Agent; pick the ElevenLabs voice on Voice AI."
+        subtitle="These stay separate from the wiring on this page."
+        bare
       >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-          <ShortcutCard
-            icon="🤖"
-            title="SDR Agent"
-            description="System prompt, knowledge base, SMS/email templates, and sequence thresholds."
-            cta="Open SDR Agent →"
-            onClick={() => navigate("/sdr")}
-          />
-          <ShortcutCard
-            icon="🎙️"
-            title="Voice AI"
-            description="Choose and preview the ElevenLabs voice used on outbound calls."
-            cta="Open Voice AI →"
-            onClick={() => navigate("/voice-ai")}
-          />
-          <ShortcutCard
-            icon="📞"
-            title="AI Calling"
-            description="Review live call sessions, recordings, and transcripts after setup."
-            cta="Open AI Calling →"
-            onClick={() => navigate("/calling")}
-          />
+        <div className="sdr-setup-dest">
+          <button type="button" onClick={() => navigate("/sdr")}>
+            <small>Prompt</small>
+            <strong>SDR Agent</strong>
+            <span>System prompt, knowledge base, templates, timing.</span>
+          </button>
+          <button type="button" onClick={() => navigate("/voice-ai")}>
+            <small>Voice</small>
+            <strong>Voice AI</strong>
+            <span>ElevenLabs voice used on outbound calls.</span>
+          </button>
+          <button type="button" onClick={() => navigate("/calling")}>
+            <small>Activity</small>
+            <strong>AI Calling</strong>
+            <span>Sessions, recordings, and transcripts.</span>
+          </button>
         </div>
       </SetupSection>
     </div>

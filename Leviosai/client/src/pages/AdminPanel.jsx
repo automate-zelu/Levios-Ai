@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
 import { adminApi } from "../api.js";
+import { ADMIN_PAGE_PATHS, parseAdminLocation } from "../lib/admin-routes.js";
 import { PlatformAnalytics } from "../components/admin/PlatformAnalytics.jsx";
 import { WorkspaceList } from "../components/admin/WorkspaceList.jsx";
 import { WorkspaceDetail } from "../components/admin/WorkspaceDetail.jsx";
 import { StuckEnrollments } from "../components/admin/StuckEnrollments.jsx";
-import { tierBadgeColor } from "../lib/admin-helpers.js";
+import { CommercialPricingSettings } from "../components/admin/CommercialPricingSettings.jsx";
+import { AdminPaymentsPage } from "../components/admin/AdminPaymentsPage.jsx";
+import "./admin-shell.css";
 
 function OrgsPage() {
   const [orgs, setOrgs] = useState([]);
@@ -25,7 +29,6 @@ function OrgsPage() {
           <thead>
             <tr style={{ background: COLORS.surfaceAlt }}>
               <th style={S.th}>Organization</th>
-              <th style={S.th}>Tier</th>
               <th style={S.th}>Status</th>
               <th style={S.th}>Users</th>
               <th style={S.th}>Workspaces</th>
@@ -35,7 +38,6 @@ function OrgsPage() {
             {orgs.map((o) => (
               <tr key={o.id}>
                 <td style={S.td}><strong>{o.name}</strong></td>
-                <td style={S.td}><span style={S.badge(tierBadgeColor(o.tier, COLORS))}>{o.tier}</span></td>
                 <td style={S.td}><span style={S.badge(o.isActive ? COLORS.green : COLORS.red)}>{o.isActive ? "Active" : "Inactive"}</span></td>
                 <td style={S.td}>{o.userCount}</td>
                 <td style={S.td}>{o.workspaceCount}</td>
@@ -201,11 +203,12 @@ function CallsPage({ workspaceList }) {
 }
 
 /**
- * Operator admin shell — plan §13.5 AdminPanel + RequireRole (gated by App).
+ * Operator admin shell — copper ops styling aligned with SDR pages.
  */
 export default function AdminPanel({ user, onLogout }) {
-  const [activePage, setActivePage] = useState("overview");
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { page: activePage, workspaceId: selectedWorkspaceId } = parseAdminLocation(location.pathname);
   const [workspaceList, setWorkspaceList] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [stuck, setStuck] = useState([]);
@@ -228,24 +231,47 @@ export default function AdminPanel({ user, onLogout }) {
 
   useEffect(loadGlobal, []);
 
-  const navItems = [
-    { key: "overview", icon: "📊", label: "Overview" },
-    { key: "workspaces", icon: "🏢", label: "Workspaces", badge: workspaceList.length || null },
-    { key: "orgs", icon: "🏛️", label: "Organizations" },
-    { key: "users", icon: "👥", label: "Users" },
-    { key: "enrollments", icon: "🤖", label: "Stuck SDR", badge: stuck.length > 0 ? stuck.length : null, badgeColor: COLORS.red },
-    { key: "calls", icon: "📞", label: "Call History" },
+  const navSections = [
+    {
+      label: "Operations",
+      items: [
+        { key: "overview", label: "Overview" },
+        { key: "workspaces", label: "Accounts", badge: workspaceList.length || null },
+        { key: "orgs", label: "Organizations" },
+        { key: "users", label: "Users" },
+      ],
+    },
+    {
+      label: "Commercial",
+      items: [
+        { key: "pricing", label: "Pricing" },
+        { key: "payments", label: "Payments" },
+      ],
+    },
+    {
+      label: "SDR",
+      items: [
+        { key: "enrollments", label: "Stuck SDR", badge: stuck.length > 0 ? stuck.length : null, alert: true },
+        { key: "calls", label: "Call history" },
+      ],
+    },
   ];
+
+  const flatNav = navSections.flatMap((s) => s.items);
+  const pageTitle =
+    selectedWorkspaceId && activePage === "workspaces"
+      ? "Account detail"
+      : flatNav.find((n) => n.key === activePage)?.label ?? "Admin";
 
   const renderContent = () => {
     if (loading) {
-      return <div style={{ color: COLORS.textMuted, padding: 40, textAlign: "center" }}>Loading admin data…</div>;
+      return <div style={{ color: COLORS.textMuted, padding: 40, textAlign: "center" }} role="status">Loading admin data…</div>;
     }
     if (activePage === "workspaces" && selectedWorkspaceId) {
       return (
         <WorkspaceDetail
           workspaceId={selectedWorkspaceId}
-          onBack={() => setSelectedWorkspaceId(null)}
+          onBack={() => navigate(ADMIN_PAGE_PATHS.workspaces)}
           onChanged={loadGlobal}
         />
       );
@@ -253,12 +279,26 @@ export default function AdminPanel({ user, onLogout }) {
     switch (activePage) {
       case "overview":
         return <PlatformAnalytics analytics={analytics} workspaceList={workspaceList} stuck={stuck} />;
+      case "pricing":
+        return (
+          <div>
+            <header style={{ marginBottom: 20 }}>
+              <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Pricing</h2>
+              <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "6px 0 0", maxWidth: "56ch", lineHeight: 1.45 }}>
+                Global monthly retainer (always on) and per-client appointment fees. Open a user to edit their rates.
+              </p>
+            </header>
+            <CommercialPricingSettings />
+          </div>
+        );
+      case "payments":
+        return <AdminPaymentsPage />;
       case "workspaces":
         return (
           <WorkspaceList
             workspaceList={workspaceList}
             onRefresh={loadGlobal}
-            onSelect={(id) => setSelectedWorkspaceId(id)}
+            onSelect={(id) => navigate(`${ADMIN_PAGE_PATHS.workspaces}/${id}`)}
           />
         );
       case "orgs":
@@ -275,82 +315,65 @@ export default function AdminPanel({ user, onLogout }) {
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: COLORS.bg, color: COLORS.text, fontFamily: "'DM Sans','Outfit',system-ui,sans-serif", overflow: "hidden" }}>
+    <div className="admin-shell">
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Outfit:wght@600;700&display=swap" rel="stylesheet" />
-      <div style={{ width: 240, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        <div style={{ padding: "20px 20px 16px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: `linear-gradient(135deg,${COLORS.purple},#7d3c98)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>🛡</div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700 }}>Leviosai</div>
-              <div style={{ fontSize: 10, color: COLORS.purple, fontWeight: 600, letterSpacing: 0.8 }}>OPERATOR PORTAL</div>
-            </div>
+      <aside className="admin-sidebar" aria-label="Admin navigation">
+        <Link to={ADMIN_PAGE_PATHS.overview} className="admin-sidebar-brand">
+          <div className="admin-sidebar-mark" aria-hidden="true">L</div>
+          <div>
+            <strong>Leviosai</strong>
+            <span>Operator</span>
           </div>
-        </div>
+        </Link>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "12px 0" }}>
-          <div style={{ padding: "6px 20px 8px", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1.5, color: COLORS.textDim }}>Management</div>
-          {navItems.map((item) => {
-            const active = activePage === item.key;
-            return (
-              <div
-                key={item.key}
-                onClick={() => {
-                  setActivePage(item.key);
-                  if (item.key !== "workspaces") setSelectedWorkspaceId(null);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "10px 20px",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  background: active ? "rgba(155,89,182,0.12)" : "transparent",
-                  color: active ? COLORS.purple : COLORS.textMuted,
-                  borderLeft: active ? `3px solid ${COLORS.purple}` : "3px solid transparent",
-                  fontWeight: active ? 600 : 400,
-                }}
-              >
-                <span>{item.icon}</span>
-                <span style={{ flex: 1 }}>{item.label}</span>
-                {item.badge != null && (
-                  <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 10, background: item.badgeColor || COLORS.blue, color: "#fff", fontWeight: 700 }}>
-                    {item.badge}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <nav className="admin-sidebar-nav">
+          {navSections.map((section) => (
+            <div key={section.label}>
+              <div className="admin-nav-section">{section.label}</div>
+              {section.items.map((item) => (
+                <NavLink
+                  key={item.key}
+                  to={ADMIN_PAGE_PATHS[item.key]}
+                  end={item.key === "overview"}
+                  className={({ isActive }) => `admin-nav-item${isActive ? " is-active" : ""}`}
+                >
+                  <span>{item.label}</span>
+                  {item.badge != null && (
+                    <span className={`admin-nav-badge${item.alert ? " is-alert" : ""}`}>{item.badge}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          ))}
+        </nav>
 
-        <div style={{ padding: "14px 20px", borderTop: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 30, height: 30, borderRadius: 7, background: `linear-gradient(135deg,${COLORS.purple},#7d3c98)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#fff" }}>
+        <div className="admin-sidebar-user">
+          <div className="admin-sidebar-avatar" aria-hidden="true">
             {(user?.firstName || "A")[0]}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {user ? `${user.firstName} ${user.lastName}` : "Admin"}
-            </div>
-            <div style={{ fontSize: 10, color: COLORS.purple }}>Operator</div>
+            <strong>{user ? `${user.firstName} ${user.lastName}` : "Admin"}</strong>
+            <span>Operator</span>
           </div>
-          <button style={{ background: "none", border: "none", color: COLORS.textMuted, cursor: "pointer", fontSize: 16 }} onClick={onLogout} title="Sign out">⏻</button>
+          <button
+            type="button"
+            style={{ ...S.btn("ghost"), padding: "8px 10px", minHeight: 40 }}
+            onClick={onLogout}
+            aria-label="Sign out"
+          >
+            Out
+          </button>
         </div>
-      </div>
+      </aside>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 28px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface, flexShrink: 0 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.text }}>
-            {selectedWorkspaceId && activePage === "workspaces"
-              ? "Workspace Detail"
-              : navItems.find((n) => n.key === activePage)?.label ?? "Admin"}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button style={{ ...S.btn("ghost"), padding: "6px 14px", fontSize: 12 }} onClick={loadGlobal}>↻ Refresh</button>
-            <span style={{ fontSize: 11, color: COLORS.textMuted }}>Platform · M6</span>
-          </div>
+      <div className="admin-main">
+        <div className="admin-topbar">
+          <h1>{pageTitle}</h1>
+          <button type="button" style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12, minHeight: 40 }} onClick={loadGlobal}>
+            Refresh
+          </button>
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: 28 }}>{renderContent()}</div>
+        <div className="admin-content">{renderContent()}</div>
       </div>
     </div>
   );

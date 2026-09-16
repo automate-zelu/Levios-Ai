@@ -12,6 +12,8 @@ import {
   chunkKnowledgeBaseText,
   hasKnowledgeBaseContent,
   shouldRebuildKnowledgeBase,
+  formatKbSourceBlock,
+  appendKnowledgeBaseDocuments,
   KB_CHUNK_SIZE,
   KB_CHUNK_OVERLAP,
   KB_EMBEDDING_MODEL,
@@ -117,5 +119,22 @@ describe("M9 pgvector wiring", () => {
 
   it("helper module exists", () => {
     assert.equal(existsSync(path.join(root, "lib/calling/kb-helpers.ts")), true);
+  });
+});
+
+describe("M9 KB file append", () => {
+  it("labels extracted source blocks", () => {
+    const block = formatKbSourceBlock("prices.pdf", "AC install from $x");
+    assert.match(block, /prices\.pdf/);
+    assert.match(block, /AC install/);
+  });
+
+  it("appends documents after existing notes", () => {
+    const next = appendKnowledgeBaseDocuments("Company notes", [
+      formatKbSourceBlock("faq.pdf", "We service Denver."),
+    ]);
+    assert.match(next, /Company notes/);
+    assert.match(next, /faq\.pdf/);
+    assert.match(next, /Denver/);
   });
 });

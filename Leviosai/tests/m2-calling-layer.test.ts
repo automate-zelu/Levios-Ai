@@ -26,10 +26,14 @@ import {
   measureLatency,
   shouldReconnectDeepgram,
   withTimeout,
+  mergeUtteranceFragments,
+  countWords,
   PIPELINE_LATENCY_WARN_MS,
   DEEPGRAM_MAX_RECONNECTS,
   LLM_RESPONSE_TIMEOUT_MS,
   TTS_TIMEOUT_MS,
+  LEAD_TURN_GAP_MS,
+  transcriptHasLeadSpeech,
 } from "../lib/calling/pipeline-helpers.js";
 
 // ─── TranscriptStore ──────────────────────────────────────────────────────────
@@ -136,6 +140,19 @@ describe("M2 pipeline helpers", () => {
     assert.equal(DEEPGRAM_MAX_RECONNECTS, 2);
     assert.ok(LLM_RESPONSE_TIMEOUT_MS >= 10_000);
     assert.ok(TTS_TIMEOUT_MS >= 5_000);
+    assert.ok(LEAD_TURN_GAP_MS >= 1000);
+  });
+
+  it("merges lead STT fragments into one turn", () => {
+    assert.equal(
+      mergeUtteranceFragments("could you", "tell me more about your business"),
+      "could you tell me more about your business"
+    );
+    assert.equal(
+      mergeUtteranceFragments("could you", "could you tell me more"),
+      "could you tell me more"
+    );
+    assert.equal(countWords("could you tell me"), 4);
   });
 
   it("measureLatency flags over-budget totals", () => {
@@ -232,5 +249,33 @@ describe("M2 Twilio Say TTS fallback", () => {
     clearSayFallbackRedirect(id);
     assert.equal(isSayFallbackRedirect(id), false);
     assert.equal(shouldSuppressEndOnStreamClose(id), false);
+  });
+});
+
+describe("M2 transcriptHasLeadSpeech", () => {
+  it("ignores empty, greeting-only, and JSON without lead lines", () => {
+    assert.equal(transcriptHasLeadSpeech(null), false);
+    assert.equal(transcriptHasLeadSpeech(""), false);
+    assert.equal(transcriptHasLeadSpeech("AI: Hi, this is Aria calling from NorthPeak."), false);
+    assert.equal(
+      transcriptHasLeadSpeech(JSON.stringify([{ speaker: "ai", text: "Hi there", at: 1 }])),
+      false
+    );
+  });
+
+  it("detects lead speech in plain text and JSON transcripts", () => {
+    assert.equal(
+      transcriptHasLeadSpeech("AI: Hi Aria here.\nLEAD: Yeah, who is this?"),
+      true
+    );
+    assert.equal(
+      transcriptHasLeadSpeech(
+        JSON.stringify([
+          { speaker: "ai", text: "Hi", at: 1 },
+          { speaker: "lead", text: "Hello", at: 2 },
+        ])
+      ),
+      true
+    );
   });
 });

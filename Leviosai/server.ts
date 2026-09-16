@@ -23,6 +23,7 @@ import sdrRoutes from "./routes/sdr.js";
 import adminRoutes from "./routes/admin.js";
 import twilioByotRoutes from "./routes/twilio-byot.js";
 import callRoutes, { handleCallStream } from "./routes/call.js";
+import { handleBrowserTestCallStream } from "./lib/calling/browser-test-session.js";
 import teamRoutes from "./routes/team.js";
 import calendarRoutes from "./routes/calendar.js";
 import gmailRoutes from "./routes/gmail.js";
@@ -111,6 +112,10 @@ async function start() {
   // Loads existing embeddings when present; re-embeds only when the collection is empty.
   // Non-blocking — server continues starting while this runs.
   if (dbOk) {
+    const { ensureTestCreditColumn } = await import("./lib/schema-ensure.js");
+    await ensureTestCreditColumn();
+    const { ensureCommercialPricingSchema } = await import("./lib/commercial-pricing-service.js");
+    await ensureCommercialPricingSchema();
     rebuildAllKnowledgeBases().catch((err: Error) =>
       console.error("KB rebuild failed:", err.message)
     );
@@ -153,6 +158,11 @@ async function start() {
 
   console.log(`✅ SDR dormant scan + recovery scheduled every ${SDR_SCAN_INTERVAL_MS / 60000} minutes`);
 
+  if (dbOk) {
+    const { startSubscriptionBillingCron } = await import("./lib/subscription-billing.js");
+    startSubscriptionBillingCron();
+  }
+
   // Setup frontend
   await setupVite();
 
@@ -164,15 +174,24 @@ async function start() {
 
   httpServer.on("upgrade", (request, socket, head) => {
     const url = request.url ?? "";
-    const match = url.match(/^\/api\/call\/stream\/([^/?]+)/);
-    if (match) {
-      const sessionId = match[1];
+    const callMatch = url.match(/^\/api\/call\/stream\/([^/?]+)/);
+    if (callMatch) {
+      const sessionId = callMatch[1];
       wss.handleUpgrade(request, socket, head, (ws) => {
         handleCallStream(ws, sessionId);
       });
-    } else {
-      socket.destroy();
+      return;
     }
+    const testMatch = url.match(/^\/api\/sdr\/test-call\/([^/?]+)/);
+    if (testMatch) {
+      const sessionId = decodeURIComponent(testMatch[1]);
+      const token = new URL(url, "http://localhost").searchParams.get("token");
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        handleBrowserTestCallStream(ws, sessionId, token);
+      });
+      return;
+    }
+    socket.destroy();
   });
 
   httpServer.listen(PORT, () => {

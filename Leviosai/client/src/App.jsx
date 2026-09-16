@@ -1,17 +1,21 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
+import { isAdminAppPath, parseAdminLocation, safeAdminNext } from "./lib/admin-routes.js";
 import _ from "lodash";
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { auth, setToken, clearToken, isAuthenticated, dashboard, leadsApi, appointmentsApi, campaignsApi, proposalsApi, activityApi, messagesApi, messagingApi, aiApi, sandboxApi, settingsApi, sdrApi, callApi, calendarApi } from "./api.js";
 import { INTEGRATION_CATEGORIES, integrationsService, MOCK_BILLING } from "./services.js";
 import SDRConfigPage from "./pages/SDRConfigPage.jsx";
 import CallingPanelPage from "./pages/CallingPanelPage.jsx";
+import LiveCallsPage from "./pages/LiveCallsPage.jsx";
 import SDRSetupPage from "./pages/SDRSetupPage.jsx";
 import MessageInboxPage from "./pages/MessageInboxPage.jsx";
 import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
 import LeadDetailPage from "./pages/LeadDetailPage.jsx";
+import VoiceAIPage from "./pages/VoiceAIPage.jsx";
+import BookingsPage from "./pages/BookingsPage.jsx";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
 
@@ -931,6 +935,7 @@ function RegisterPage({ onRegister }) {
 // ============================================================
 function AdminLoginPage({ onLogin }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [loading, setLoading] = useState(false);
@@ -948,7 +953,7 @@ function AdminLoginPage({ onLogin }) {
       }
       setToken(res.token);
       onLogin(res.user);
-      navigate("/admin");
+      navigate(safeAdminNext(location.search), { replace: true });
     } catch (err) {
       setError(err.message || "Invalid credentials");
     } finally {
@@ -1206,23 +1211,17 @@ function DashboardPage({ setPage }) {
           </div>
 
           {sdrAnalytics?.usage && (
-            <div style={{ ...S.card }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textMuted, marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.5 }}>Monthly Usage</div>
-              {[
-                { label: "Leads Enrolled", used: sdrAnalytics.usage.leadsUsed, limit: sdrAnalytics.usage.leadsLimit, color: COLORS.orange },
-                { label: "Call Minutes",   used: sdrAnalytics.usage.minutesUsed, limit: sdrAnalytics.usage.minutesLimit, color: COLORS.blue },
-              ].map(u => (
-                <div key={u.label} style={{ marginBottom: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12 }}>
-                    <span style={{ color: COLORS.text }}>{u.label}</span>
-                    <span style={{ color: COLORS.textMuted }}>{u.used} / {u.limit}</span>
-                  </div>
-                  <ProgressBar value={u.used} max={u.limit || 1} color={u.used / (u.limit || 1) > 0.9 ? COLORS.red : u.color} height={6} />
-                  {u.used / (u.limit || 1) > 0.9 && (
-                    <div style={{ fontSize: 11, color: COLORS.red, marginTop: 4 }}>⚠ Near limit — <span style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setPage("Billing")}>upgrade plan</span></div>
-                  )}
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ ...S.card, flex: "1 1 160px", marginBottom: 0 }}>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6 }}>Leads enrolled this period</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{sdrAnalytics.usage.leadsUsed ?? 0}</div>
+              </div>
+              <div style={{ ...S.card, flex: "1 1 160px", marginBottom: 0 }}>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 6 }}>Call minutes this period</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>
+                  {`${Math.floor(Number(sdrAnalytics.usage.minutesUsed || 0))}:${String(Math.round((Number(sdrAnalytics.usage.minutesUsed || 0) * 60) % 60)).padStart(2, "0")}`}
                 </div>
-              ))}
+              </div>
             </div>
           )}
         </div>
@@ -1917,188 +1916,10 @@ function CampaignsPage() {
 }
 
 // ============================================================
-// APPOINTMENTS — with Feature 1 (Show-Up Guarantee)
+// APPOINTMENTS — bookings ledger (cancel / reschedule / notify)
 // ============================================================
 function AppointmentsPage() {
-  const [appointments, setAppointments] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [highlightId, setHighlightId] = useState(() => {
-    const hId = sessionStorage.getItem("highlight_appointment");
-    return hId ? parseInt(hId) : null;
-  });
-
-  useEffect(() => {
-    setLoading(true);
-    appointmentsApi.list().then((data) => {
-      setAppointments(data.map(a => ({
-        id: a.id,
-        lead: `${a.leadFirstName || ""} ${a.leadLastName || ""}`.trim() || a.title,
-        date: new Date(a.scheduledAt).toISOString().split("T")[0],
-        time: new Date(a.scheduledAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        type: "Consultation",
-        rep: "TBD",
-        status: a.status === "scheduled" ? "Confirmed" : a.status === "completed" ? "Completed" : a.status,
-        product: "—",
-        showed: a.status === "completed" ? true : null,
-        creditApplied: false,
-      })));
-    }).catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  // Scroll to highlighted row and clear after timeout
-  useEffect(() => {
-    if (highlightId !== null && appointments.length) {
-      sessionStorage.removeItem("highlight_appointment");
-      const timer = setTimeout(() => setHighlightId(null), 6000);
-      setTimeout(() => {
-        const row = document.querySelector(`tr[data-appt-id="${highlightId}"]`);
-        if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [highlightId, appointments]);
-  const [showGuaranteeInfo, setShowGuaranteeInfo] = useState(false);
-
-  const toggleShowUp = (id, showed) => {
-    setAppointments(prev => prev.map(a => a.id === id ? { ...a, showed, creditApplied: !showed, status: "Completed" } : a));
-  };
-
-  const deleteAppointment = async (id) => {
-    if (!window.confirm("Delete this appointment?")) return;
-    try {
-      await appointmentsApi.delete(id);
-      setAppointments(prev => prev.filter(a => a.id !== id));
-    } catch (err) {
-      alert("Failed to delete: " + err.message);
-    }
-  };
-
-  const noShows = appointments.filter(a => a.showed === false);
-  const totalCredits = noShows.length * 200;
-
-  if (loading && appointments.length === 0) return <LoadingState message="Loading appointments..." />;
-  if (error && appointments.length === 0) return <ErrorState message={error} />;
-
-  return (
-    <div>
-      <div className="page-header">
-        <div><h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Appointments</h2><p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>{appointments.length} total · {noShows.length} no-shows · ${totalCredits} in credits</p></div>
-      </div>
-
-      <div className="grid-stats" style={{ marginBottom: 24 }}>
-        <StatCard label="This Week" value="5" color={COLORS.green} icon="📅" />
-        <StatCard label="This Month" value="34" color={COLORS.orange} icon="📊" />
-        <StatCard label="Show Rate" value="87" suffix="%" color={COLORS.teal} icon="✅" />
-        <StatCard label="No-Show Credits" value={`$${totalCredits}`} color={COLORS.yellow} icon="💸" />
-        <StatCard label="Close Rate" value="42" suffix="%" color={COLORS.purple} icon="🏆" />
-      </div>
-
-      {/* FEATURE 1: Show-Up Guarantee Banner */}
-      <div style={{ padding: 18, borderRadius: 12, background: `${COLORS.teal}10`, border: `1px solid ${COLORS.teal}33`, marginBottom: 20, display: "flex", alignItems: "center", gap: 16 }}>
-        <span style={{ fontSize: 32 }}>🛡️</span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.teal }}>Show-Up Guarantee Active</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            You pay $400/$500 per appointment set. If a prospect doesn't show, you receive a <strong style={{ color: COLORS.teal }}>$200 credit</strong> automatically applied to your next invoice. {noShows.length} no-shows this month = <strong style={{ color: COLORS.teal }}>${totalCredits} in credits</strong>.
-          </div>
-        </div>
-        <button style={S.btn("ghost")} onClick={() => setShowGuaranteeInfo(true)}>Details</button>
-      </div>
-
-      <div style={S.card}>
-        <div style={S.cardHeader}><span>All Appointments</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <select style={S.select}><option>All Reps</option><option>Mike Torres</option><option>Sarah Kim</option><option>Round Robin</option></select>
-          </div>
-        </div>
-        <div className="table-responsive">
-        <table style={S.table}>
-          <thead><tr>
-            <th style={S.th}>Lead</th><th style={S.th}>Date & Time</th><th style={S.th} className="hide-mobile">Type</th><th style={S.th} className="hide-mobile">Rep</th><th style={S.th} className="hide-mobile">Product</th><th style={S.th}>Status</th><th style={S.th}>Showed?</th><th style={S.th}>Credit</th><th style={S.th}></th>
-          </tr></thead>
-          <tbody>
-            {appointments.map((a) => (
-              <tr key={a.id} data-appt-id={a.id} style={a.id === highlightId ? { animation: "highlightPulse 1.5s ease-in-out 3" } : undefined}>
-                <td style={S.td}><span style={{ fontWeight: 600 }}>{a.lead}</span>{a.id === highlightId && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 8px", borderRadius: 4, background: `${COLORS.green}22`, color: COLORS.green, fontWeight: 600, animation: "slideUp 0.5s ease-out" }}>NEW</span>}</td>
-                <td style={S.td}><div style={{ fontSize: 13 }}>{a.date}</div><div style={{ fontSize: 12, color: COLORS.orange, fontWeight: 600 }}>{a.time}</div></td>
-                <td style={S.td} className="hide-mobile"><span style={S.tag(COLORS.textMuted)}>{a.type}</span></td>
-                <td style={S.td} className="hide-mobile">{a.rep}</td>
-                <td style={S.td} className="hide-mobile">{a.product}</td>
-                <td style={S.td}><span style={S.badge(a.status === "Confirmed" ? COLORS.green : a.status === "Completed" ? COLORS.blue : COLORS.yellow)}>{a.status}</span></td>
-                {/* FEATURE 1: Show-up tracking */}
-                <td style={S.td}>
-                  {a.status === "Completed" ? (
-                    a.showed === true ? <span style={{ color: COLORS.green, fontWeight: 600 }}>✓ Yes</span> :
-                    a.showed === false ? <span style={{ color: COLORS.red, fontWeight: 600 }}>✗ No-Show</span> :
-                    <span style={{ color: COLORS.textMuted }}>—</span>
-                  ) : a.status === "Confirmed" || a.status === "Pending" ? (
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <button style={{ ...S.btn("success"), padding: "4px 10px", fontSize: 11 }} onClick={() => toggleShowUp(a.id, true)}>✓</button>
-                      <button style={{ ...S.btn("danger"), padding: "4px 10px", fontSize: 11 }} onClick={() => toggleShowUp(a.id, false)}>✗</button>
-                    </div>
-                  ) : <span style={{ color: COLORS.textMuted }}>—</span>}
-                </td>
-                <td style={S.td}>
-                  {a.creditApplied ? <span style={S.badge(COLORS.teal)}>$200 Credit</span> : <span style={{ color: COLORS.textDim }}>—</span>}
-                </td>
-                <td style={S.td}>
-                  <button style={{ ...S.btn("danger"), padding: "4px 10px", fontSize: 11 }} onClick={() => deleteAppointment(a.id)}>✕</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
-      </div>
-
-      {/* Scheduling config card */}
-      <div style={S.card}>
-        <div style={S.cardHeader}>Calendar & Scheduling Settings</div>
-        <div className="grid-2col">
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Scheduling Mode</div>
-            {["Round Robin (rotate evenly)", "First Available Rep", "Specific Rep Assignment", "Weighted Distribution"].map((mode, i) => (
-              <label key={mode} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, border: `1px solid ${COLORS.border}`, cursor: "pointer", fontSize: 13, background: i === 0 ? COLORS.orangeGlow : "transparent", marginBottom: 8 }}>
-                <input type="radio" name="schedMode" defaultChecked={i === 0} /> {mode}
-              </label>
-            ))}
-          </div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>AI Appointment Strategy</div>
-            <div style={{ padding: 14, background: COLORS.surfaceAlt, borderRadius: 8, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 12 }}>
-              AI offers <strong style={{ color: COLORS.orangeLight }}>2 specific time slots first</strong>, optimized for prospect availability and rep calendars. If neither works: "What time works best for you this week?"
-            </div>
-            <Toggle value={true} label="Auto-send confirmation text + email" />
-            <div style={{ marginTop: 8 }}><Toggle value={true} label="24-hour reminder" /></div>
-            <div style={{ marginTop: 8 }}><Toggle value={true} label="Same-day morning reminder" /></div>
-            <div style={{ marginTop: 8 }}><Toggle value={true} label="Post-appointment show-up tracking" /></div>
-          </div>
-        </div>
-      </div>
-
-      {showGuaranteeInfo && (
-        <div style={S.modal} onClick={() => setShowGuaranteeInfo(false)}>
-          <div style={S.modalContent} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>🛡️ Show-Up Guarantee Program</h3>
-            <div style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.8 }}>
-              <p><strong style={{ color: COLORS.text }}>How it works:</strong></p>
-              <p>• You pay the standard per-appointment fee ($400 riivīv / $500 alīv) for every appointment set by our AI agents.</p>
-              <p>• If the prospect <strong style={{ color: COLORS.red }}>does not show up</strong>, you automatically receive a <strong style={{ color: COLORS.teal }}>$200 credit</strong> on your next invoice.</p>
-              <p>• Credits are tracked in real-time and appear on your monthly billing statement.</p>
-              <p>• Mark appointments as "Showed" or "No-Show" directly in the Appointments table, or our AI can auto-detect from your calendar.</p>
-              <p style={{ marginTop: 12 }}><strong style={{ color: COLORS.text }}>This month's summary:</strong></p>
-              <p>• Total appointments: {appointments.filter(a => a.status === "Completed").length} completed</p>
-              <p>• No-shows: {noShows.length}</p>
-              <p>• Credits earned: <strong style={{ color: COLORS.teal }}>${totalCredits}</strong></p>
-            </div>
-            <button style={{ ...S.btn("primary"), marginTop: 20, width: "100%" }} onClick={() => setShowGuaranteeInfo(false)}>Got it</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return <BookingsPage />;
 }
 
 // ============================================================
@@ -2378,143 +2199,7 @@ function ProposalsPage() {
   );
 }
 
-// ============================================================
-// VOICE AI
-// ============================================================
-function VoiceAIPage() {
-  const navigate = useNavigate();
-  const [voices, setVoices]                   = useState([]);
-  const [voicesLoading, setVoicesLoading]     = useState(false);
-  const [selectedVoiceId, setSelectedVoiceId] = useState("");
-  const [savingVoice, setSavingVoice]         = useState(false);
-  const [voiceSaved, setVoiceSaved]           = useState(false);
-  const [playingId, setPlayingId]             = useState(null);
-  const audioRef = useRef(null);
-
-  useEffect(() => {
-    setVoicesLoading(true);
-    Promise.all([callApi.getVoices(), sdrApi.getConfig()])
-      .then(([vList, cfg]) => {
-        setVoices(vList || []);
-        if (cfg?.assistantVoiceId) setSelectedVoiceId(cfg.assistantVoiceId);
-        else if (vList?.length) setSelectedVoiceId(vList[0].id);
-      })
-      .catch(() => {})
-      .finally(() => setVoicesLoading(false));
-  }, []);
-
-  const playPreview = (voiceId, url) => {
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-    if (playingId === voiceId) { setPlayingId(null); return; }
-    if (!url) return;
-    const audio = new Audio(url);
-    audioRef.current = audio;
-    setPlayingId(voiceId);
-    audio.play().catch(() => setPlayingId(null));
-    audio.onended = () => setPlayingId(null);
-  };
-
-  const saveVoice = async () => {
-    if (!selectedVoiceId) return;
-    setSavingVoice(true);
-    try {
-      await sdrApi.saveVoice(selectedVoiceId);
-      setVoiceSaved(true);
-      setTimeout(() => setVoiceSaved(false), 3000);
-    } catch {}
-    setSavingVoice(false);
-  };
-
-  return (
-    <div>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Voice AI</h2>
-        <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
-          Choose the ElevenLabs voice for outbound AI calls. Conversation behavior is a single system prompt — not separate talk-track or objection modules.
-        </p>
-      </div>
-
-      <div style={{
-        ...S.card,
-        marginBottom: 16,
-        padding: 14,
-        border: `1px solid ${COLORS.border}`,
-        background: COLORS.surfaceAlt,
-      }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Single-prompt agent</div>
-        <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.55, marginBottom: 10 }}>
-          Opener, tone, objection handling, and booking goals all belong in one system prompt on the SDR Agent page.
-          The live call agent loads that prompt only — there is no separate objection-handling UI or workflow.
-        </div>
-        <button type="button" style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 12 }} onClick={() => navigate("/sdr")}>
-          Edit system prompt on SDR Agent →
-        </button>
-      </div>
-
-      <div style={S.card}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={S.cardHeader}>AI Voice</div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>Select the ElevenLabs voice your AI agent will use on calls. Click ▶ to preview.</div>
-          </div>
-          <button
-            type="button"
-            style={{ ...S.btn("primary"), padding: "8px 20px", opacity: savingVoice ? 0.6 : 1 }}
-            onClick={saveVoice}
-            disabled={savingVoice || !selectedVoiceId}
-          >
-            {voiceSaved ? "✓ Saved" : savingVoice ? "Saving…" : "Save Voice"}
-          </button>
-        </div>
-
-        {voicesLoading ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>Loading voices from ElevenLabs…</div>
-        ) : voices.length === 0 ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>No voices found. Check that ELEVENLABS_API_KEY is set.</div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-            {voices.map(v => {
-              const isSelected  = selectedVoiceId === v.id;
-              const isPreviewing = playingId === v.id;
-              return (
-                <div
-                  key={v.id}
-                  onClick={() => setSelectedVoiceId(v.id)}
-                  style={{
-                    border: `2px solid ${isSelected ? COLORS.orange : COLORS.border}`,
-                    borderRadius: 10, padding: "12px 14px", cursor: "pointer",
-                    background: isSelected ? COLORS.orangeGlow : COLORS.surfaceAlt,
-                    display: "flex", alignItems: "center", gap: 12,
-                    transition: "border-color 0.15s, background 0.15s",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); playPreview(v.id, v.previewUrl); }}
-                    style={{
-                      width: 36, height: 36, borderRadius: "50%", border: "none", cursor: "pointer",
-                      background: isPreviewing ? COLORS.red : isSelected ? COLORS.orange : COLORS.border,
-                      color: "#fff", fontSize: 13, flexShrink: 0,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
-                    title={isPreviewing ? "Stop" : "Preview"}
-                  >
-                    {isPreviewing ? "■" : "▶"}
-                  </button>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</div>
-                    <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: "monospace", marginTop: 2 }}>{v.id.slice(0, 22)}…</div>
-                  </div>
-                  {isSelected && <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.orange, flexShrink: 0 }} />}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+// Voice AI lives in pages/VoiceAIPage.jsx
 
 // ============================================================
 // CONVERSATION REPLAY (Dedicated Page) — Feature 2
@@ -3956,12 +3641,14 @@ const PAGE_TO_PATH = {
   "Dashboard": "/",
   "Leads": "/leads",
   "Campaigns": "/campaigns",
+  "Bookings": "/bookings",
   "Appointments": "/appointments",
   "Conversation Replay": "/replay",
   "Sandbox": "/sandbox",
   "Proposals & Sales": "/proposals",
   "SDR Agent": "/sdr",
   "AI Calling": "/calling",
+  "Live Calls": "/live-calls",
   "Voice AI": "/voice-ai",
   "SMS Inbox": "/sdr-sms",
   "Email Inbox": "/sdr-email",
@@ -3980,6 +3667,7 @@ export default function CatalystApp() {
   const [user, setUser] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [testCallOpen, setTestCallOpen] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => !!localStorage.getItem(ONBOARDING_FLAG_KEY)
   );
@@ -4001,8 +3689,12 @@ export default function CatalystApp() {
 
   // Collapse main CRM rail when opening a lead; restore when leaving
   useEffect(() => {
+    if (testCallOpen) {
+      setSidebarCollapsed(true);
+      return;
+    }
     setSidebarCollapsed(isLeadDetail);
-  }, [isLeadDetail]);
+  }, [isLeadDetail, testCallOpen]);
 
   useEffect(() => {
     if (isAuthenticated() && !user) {
@@ -4048,11 +3740,18 @@ export default function CatalystApp() {
     navigate("/sdr-setup", { replace: true });
     return null;
   }
+  if (location.pathname === "/appointments") {
+    navigate("/bookings", { replace: true });
+    return null;
+  }
 
   // ── /admin-login route — public, no auth required ──────────────────────────
   if (location.pathname === "/admin-login") {
     // Already logged in — wait for userRole to resolve before redirecting
-    if (loggedIn && userRole === "admin") { navigate("/admin"); return null; }
+    if (loggedIn && userRole === "admin") {
+      navigate(safeAdminNext(location.search), { replace: true });
+      return null;
+    }
     if (loggedIn && userRole !== null && userRole !== "admin") { navigate("/"); return null; }
     // loggedIn but role still null → hold, don't flash login form
     if (loggedIn && userRole === null) return null;
@@ -4069,8 +3768,12 @@ export default function CatalystApp() {
 
   // ── Unauthenticated users ───────────────────────────────────────────────────
   if (!loggedIn) {
-    // Trying to hit /admin without a session → send to operator login
-    if (location.pathname === "/admin") { navigate("/admin-login"); return null; }
+    // Trying to hit /admin or /admin/... without a session → operator login
+    if (isAdminAppPath(location.pathname)) {
+      const next = encodeURIComponent(location.pathname);
+      navigate(`/admin-login?next=${next}`);
+      return null;
+    }
     if (location.pathname === "/register") {
       return (
         <RegisterPage
@@ -4107,18 +3810,22 @@ export default function CatalystApp() {
 
   // ── /admin route guard — only redirect if role is definitively not admin
   // (userRole === null means state is still loading — don't redirect yet)
-  if (location.pathname === "/admin" && userRole !== null && userRole !== "admin") {
+  if (isAdminAppPath(location.pathname) && userRole !== null && userRole !== "admin") {
     navigate("/");
     return null;
   }
 
   // ── Admin users get a completely separate shell — no CRM sidebar/nav ───────
   if (userRole === "admin") {
+    if (!isAdminAppPath(location.pathname) || !parseAdminLocation(location.pathname).known) {
+      navigate("/admin", { replace: true });
+      return null;
+    }
     return <AdminPanel user={user} onLogout={handleLogout} />;
   }
 
   // ── If role is still loading and we're at /admin, hold render ────────────
-  if (userRole === null && location.pathname === "/admin") return null;
+  if (userRole === null && isAdminAppPath(location.pathname)) return null;
 
   // Authenticated app is wrapped below in <SettingsProvider> so every Toggle
   // with a recognized label/settingKey auto-persists to /api/settings.
@@ -4129,7 +3836,7 @@ export default function CatalystApp() {
     { section: "CRM" },
     { name: "Leads", icon: "👥" },
     { name: "Campaigns", icon: "🚀", sub: "riivīv & alīv" },
-    { name: "Appointments", icon: "📅" },
+    { name: "Bookings", icon: "📅", sub: "Cancel · Reschedule" },
     { name: "Conversation Replay", icon: "💬" },
     { name: "Proposals & Sales", icon: "📝", badge: "PRO" },
     { name: "Sandbox", icon: "⚡", badge: "DEMO" },
@@ -4139,6 +3846,7 @@ export default function CatalystApp() {
     { name: "SDR Agent", icon: "🤖", sub: "Prompt · Templates" },
     { name: "Voice AI", icon: "🎙️", sub: "ElevenLabs voice" },
     { name: "AI Calling", icon: "📞", sub: "Bookings · Outcomes" },
+    { name: "Live Calls", icon: "🔴", sub: "Live transcript" },
     { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
     { name: "Email Inbox", icon: "✉️", sub: "Email threads" },
     { section: "Integrations" },
@@ -4156,6 +3864,7 @@ export default function CatalystApp() {
       case "Dashboard": return <DashboardPage setPage={navigateTo} />;
       case "Leads": return <LeadsPage onNavigate={navigateTo} />;
       case "Campaigns": return <CampaignsPage />;
+      case "Bookings":
       case "Appointments": return <AppointmentsPage />;
       case "Conversation Replay": return <ConversationReplayPage />;
       case "Sandbox": return <SandboxPage setPage={navigateTo} />;
@@ -4164,8 +3873,9 @@ export default function CatalystApp() {
       case "Connect Your Tech": return <ConnectTechPage />;
       case "Billing": return <BillingPageLive />;
       case "Settings": return <SettingsPage />;
-      case "SDR Agent": return <SDRConfigPage onNavigateBilling={() => navigateTo("Billing")} />;
+      case "SDR Agent": return <SDRConfigPage onNavigateBilling={() => navigateTo("Billing")} onTestCallActive={setTestCallOpen} />;
       case "AI Calling": return <CallingPanelPage />;
+      case "Live Calls": return <LiveCallsPage />;
       case "SDR Setup": return <SDRSetupPage />;
       case "SMS Inbox": return <MessageInboxPage channel="sms" />;
       case "Email Inbox": return <MessageInboxPage channel="email" />;
@@ -4175,7 +3885,7 @@ export default function CatalystApp() {
 
   return (
     <SettingsProvider>
-    <div className="catalyst-app" style={S.app}>
+    <div className={`catalyst-app${testCallOpen ? " is-test-call" : ""}`} style={S.app}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
 
       {/* Mobile sidebar overlay */}

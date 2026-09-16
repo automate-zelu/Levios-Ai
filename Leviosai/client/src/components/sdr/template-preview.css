@@ -1,0 +1,44 @@
+/* Message preview — light paper on dark chrome for readable copy. */
+
+.sdr-agent-preview {
+  margin-top: 12px;
+  padding: 14px 16px 16px;
+  border-radius: 8px;
+  background: #f4efe8;
+  color: #1a1714;
+  border: 1px solid rgba(244, 239, 232, 0.16);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.22),
+    0 10px 22px rgba(0, 0, 0, 0.16);
+}
+
+.sdr-agent-preview small,
+.sdr-agent-preview-kicker {
+  display: block;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6d6359;
+  margin-bottom: 6px;
+}
+
+.sdr-agent-preview-subject {
+  font-size: 14px;
+  font-weight: 650;
+  color: #14110e;
+  line-height: 1.35;
+}
+
+.sdr-agent-preview-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f1b17;
+  white-space: pre-wrap;
+}
+
+.sdr-agent-preview-field + .sdr-agent-preview-field {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(26, 23, 20, 0.1);
+}

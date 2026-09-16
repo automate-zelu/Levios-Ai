@@ -7,10 +7,10 @@ const FIELDS = [
   { key: "reEnrollDays", label: "Re-enrollment Delay (days)", help: "Days to wait before re-enrolling an exhausted lead" },
 ];
 
-export function ThresholdSettings({ values, onChange }) {
+export function ThresholdSettings({ values, onChange, bare = false }) {
   return (
-    <div style={S.card}>
-      <div style={S.cardHeader}>Sequence Thresholds</div>
+    <div style={bare ? undefined : S.card}>
+      {!bare && <div style={S.cardHeader}>Sequence Thresholds</div>}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         {FIELDS.map((f) => (
           <div key={f.key}>

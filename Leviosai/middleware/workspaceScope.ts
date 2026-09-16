@@ -1,35 +1,39 @@
-// ─── WORKSPACE SCOPE MIDDLEWARE ──────────────────────────────────────────────
-// Injects workspace context onto every SDR route request.
-// workspaceId is read exclusively from the validated JWT payload — never from
-// the request body. This guarantees a tenant can never spoof another workspace.
+/**
+ * Attach this request to the caller's organization SDR.
+ * Tenant is always organizationId from the JWT — never a client-supplied workspace id.
+ * Invited teammates share the same org, so they share the same agent and bill.
+ */
 
 import { Request, Response, NextFunction } from "express";
+import { ensureOrgSdr } from "../lib/org-tenant.js";
 
-// Extend Express Request with workspace context
 declare global {
   namespace Express {
     interface Request {
       workspace?: {
-        id: string;   // workspace uuid
-        tier: string; // starter | growth | scale | enterprise
+        id: string;
+        tier: string;
       };
     }
   }
 }
 
-export function workspaceScope(req: Request, res: Response, next: NextFunction) {
-  // req.workspaceId and req.workspaceTier are set by the JWT middleware (routes/auth.ts)
-  const workspaceId = (req as any).workspaceId as string | undefined;
-  const workspaceTier = (req as any).workspaceTier as string | undefined;
-
-  if (!workspaceId) {
-    return res.status(403).json({ error: "No workspace associated with this account" });
+export async function workspaceScope(req: Request, res: Response, next: NextFunction) {
+  if (!req.organizationId) {
+    return res.status(403).json({ error: "No organization associated with this account" });
   }
 
-  req.workspace = {
-    id: workspaceId,
-    tier: workspaceTier || "starter",
-  };
-
-  next();
+  try {
+    const sdr = await ensureOrgSdr(req.organizationId);
+    req.workspaceId = sdr.workspaceId;
+    req.workspaceTier = sdr.tier;
+    req.workspace = {
+      id: sdr.workspaceId,
+      tier: sdr.tier,
+    };
+    next();
+  } catch (err: any) {
+    console.error("workspaceScope:", err?.message || err);
+    return res.status(403).json({ error: "No organization associated with this account" });
+  }
 }

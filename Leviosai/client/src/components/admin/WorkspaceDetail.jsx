@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { COLORS, S } from "../../theme.js";
+import { COLORS, S, formatDuration } from "../../theme.js";
 import { adminApi } from "../../api.js";
-import { ADMIN_TIER_OPTIONS, tierBadgeColor } from "../../lib/admin-helpers.js";
 
 function TwilioTab({ workspaceId }) {
   const [status, setStatus] = useState(null);
@@ -165,7 +164,7 @@ function TwilioTab({ workspaceId }) {
 }
 
 /**
- * Per-workspace management: tier, activate, usage reset, Twilio, enrollments.
+ * Per-workspace management: activate, commercial rates, Twilio, enrollments.
  */
 export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
   const [detail, setDetail] = useState(null);
@@ -174,6 +173,12 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [monthlyOn, setMonthlyOn] = useState(true);
+  const [monthlyOverride, setMonthlyOverride] = useState("");
+  const [useGlobalMonthly, setUseGlobalMonthly] = useState(true);
+  const [apptOn, setApptOn] = useState(true);
+  const [apptRate, setApptRate] = useState("");
+  const [pricingMsg, setPricingMsg] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -185,6 +190,23 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
       ]);
       setDetail(d);
       setEnrollments(e?.data || []);
+      const cp = d?.commercialPricing;
+      const pd = d?.platformDefaults;
+      if (cp) {
+        setMonthlyOn(true);
+        setApptOn(!!cp.appointmentFeeEnabled);
+        setUseGlobalMonthly(!!cp.monthlyUsesGlobalAmount);
+        setMonthlyOverride(
+          cp.monthlyUsesGlobalAmount
+            ? ""
+            : String((cp.monthlyFeeCents || 0) / 100)
+        );
+        setApptRate(cp.appointmentFeeCents ? String(cp.appointmentFeeCents / 100) : "");
+      } else if (pd) {
+        setMonthlyOn(true);
+        setApptOn(false);
+        setApptRate("");
+      }
     } catch (e) {
       setErr(e.message || "Failed to load workspace");
     } finally {
@@ -197,19 +219,6 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
   }, [workspaceId]);
 
   const ws = detail?.workspace;
-
-  const setTier = async (tier) => {
-    setBusy(true);
-    try {
-      await adminApi.setWorkspaceTier(workspaceId, tier);
-      await load();
-      onChanged?.();
-    } catch (e) {
-      alert(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const toggle = async () => {
     setBusy(true);
@@ -229,6 +238,42 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
     setBusy(true);
     try {
       await adminApi.resetUsage(workspaceId);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCommercial = async () => {
+    const orgId = detail?.organization?.id;
+    if (!orgId) {
+      alert("This workspace has no organization linked.");
+      return;
+    }
+    setBusy(true);
+    setPricingMsg("");
+    try {
+      const toCents = (v) => {
+        const n = Number(String(v).replace(/[$,\s]/g, ""));
+        if (!Number.isFinite(n) || n < 0) return null;
+        return Math.round(n * 100);
+      };
+      const payload = {
+        monthlyFeeEnabled: true,
+        clearMonthlyOverride: useGlobalMonthly,
+        monthlyFeeOverrideCents: useGlobalMonthly ? null : toCents(monthlyOverride),
+        appointmentFeeEnabled: apptOn,
+      };
+      if (apptOn) {
+        const cents = toCents(apptRate);
+        if (cents == null || cents <= 0) throw new Error("Set an appointment fee for this client");
+        payload.costPerAppointmentCents = cents;
+      }
+      await adminApi.saveOrgCommercialPricing(orgId, payload);
+      setPricingMsg("Commercial rates saved.");
       await load();
       onChanged?.();
     } catch (e) {
@@ -262,57 +307,173 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <span style={S.badge(ws.isActive ? COLORS.green : COLORS.red)}>{ws.isActive ? "Active" : "Inactive"}</span>
-          <span style={S.badge(tierBadgeColor(ws.tier, COLORS))}>{ws.tier}</span>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {["overview", "enrollments", "twilio"].map((t) => (
-          <div key={t} style={S.tab(tab === t)} onClick={() => setTab(t)}>
-            {t === "overview" ? "Overview" : t === "enrollments" ? "Enrollments" : "Twilio"}
-          </div>
+      <div role="tablist" aria-label="Workspace sections" style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        {[
+          { id: "overview", label: "Overview" },
+          { id: "enrollments", label: "Enrollments" },
+          { id: "twilio", label: "Twilio" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            style={{
+              ...S.tab(tab === t.id),
+              cursor: "pointer",
+              border: "none",
+              fontFamily: "inherit",
+              minHeight: 40,
+            }}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
         ))}
       </div>
 
       {tab === "overview" && (
         <div style={{ display: "grid", gap: 16 }}>
           <div style={S.card}>
-            <div style={S.cardHeader}>Billing & limits</div>
+            <div style={S.cardHeader}>Account</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 14, marginBottom: 16 }}>
               <div>
-                <div style={{ fontSize: 11, color: COLORS.textMuted }}>Org plan</div>
-                <div style={{ fontWeight: 600 }}>{detail.organization?.plan || "—"}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted }}>Monthly fee</div>
+                <div style={{ fontWeight: 600 }}>
+                  {detail.commercialPricing?.monthlyFeeEnabled
+                    ? `$${(detail.commercialPricing.monthlyFeeCents / 100).toLocaleString("en-US")}`
+                    : "Off"}
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: COLORS.textMuted }}>Leads used</div>
-                <div style={{ fontWeight: 600 }}>{ws.monthlyLeadsUsed} / {ws.monthlyLeadLimit}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted }}>Per appointment</div>
+                <div style={{ fontWeight: 600 }}>
+                  {detail.commercialPricing?.appointmentFeeEnabled
+                    ? `$${(detail.commercialPricing.appointmentFeeCents / 100).toLocaleString("en-US")}`
+                    : "Off"}
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: COLORS.textMuted }}>Minutes used</div>
-                <div style={{ fontWeight: 600 }}>{ws.monthlyMinutesUsed} / {ws.monthlyMinuteLimit}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted }}>Leads enrolled this period</div>
+                <div style={{ fontWeight: 600 }}>{ws.monthlyLeadsUsed ?? 0}</div>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: COLORS.textMuted }}>Booked rate</div>
-                <div style={{ fontWeight: 600 }}>{detail.enrollmentStats?.bookedRate ?? 0}%</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted }}>Call time this period</div>
+                <div style={{ fontWeight: 600 }}>
+                  {formatDuration(Math.round(Number(ws.monthlyMinutesUsed || 0) * 60))}
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <select
-                style={{ ...S.input, width: "auto" }}
-                value={ws.tier}
-                disabled={busy}
-                onChange={(e) => setTier(e.target.value)}
-              >
-                {ADMIN_TIER_OPTIONS.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-              <button style={S.btn(ws.isActive ? "danger" : "success")} onClick={toggle} disabled={busy}>
+              <button type="button" style={{ ...S.btn(ws.isActive ? "danger" : "success"), minHeight: 40 }} onClick={toggle} disabled={busy}>
                 {ws.isActive ? "Deactivate" : "Activate"}
               </button>
-              <button style={S.btn("ghost")} onClick={reset} disabled={busy}>Reset usage</button>
+              <button type="button" style={{ ...S.btn("ghost"), minHeight: 40 }} onClick={reset} disabled={busy}>
+                Reset period usage
+              </button>
             </div>
           </div>
+
+          <section style={S.card} aria-labelledby="commercial-pricing-title">
+            <h3 id="commercial-pricing-title" style={{ ...S.cardHeader, display: "block", margin: "0 0 8px" }}>
+              Commercial pricing
+            </h3>
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: COLORS.textMuted, lineHeight: 1.45 }}>
+              Monthly retainer is always on. Appointment fee can be turned off for new bookings only — existing charges keep their amount.
+            </p>
+            <div style={{ display: "grid", gap: 14 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, minHeight: 40, color: COLORS.textMuted }}>
+                <input type="checkbox" checked readOnly disabled style={{ width: 18, height: 18 }} />
+                Monthly retainer is always on (cannot disable)
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, minHeight: 40 }}>
+                <input
+                  type="checkbox"
+                  checked={useGlobalMonthly}
+                  onChange={(e) => setUseGlobalMonthly(e.target.checked)}
+                  disabled={busy}
+                  style={{ width: 18, height: 18 }}
+                />
+                Use global monthly amount
+                {detail.platformDefaults && (
+                  <span style={{ color: COLORS.textMuted }}>
+                    (${((detail.platformDefaults.monthlyFeeCents || 0) / 100).toLocaleString("en-US")}/mo)
+                  </span>
+                )}
+              </label>
+              {!useGlobalMonthly && (
+                <div>
+                  <label htmlFor={`monthly-override-${workspaceId}`} style={{ display: "block", fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
+                    Negotiated monthly fee (USD)
+                  </label>
+                  <input
+                    id={`monthly-override-${workspaceId}`}
+                    inputMode="decimal"
+                    style={{ ...S.input, maxWidth: 200, minHeight: 44 }}
+                    value={monthlyOverride}
+                    onChange={(e) => setMonthlyOverride(e.target.value)}
+                    placeholder="297"
+                    disabled={busy}
+                  />
+                </div>
+              )}
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, minHeight: 40 }}>
+                <input type="checkbox" checked={apptOn} onChange={(e) => setApptOn(e.target.checked)} style={{ width: 18, height: 18 }} />
+                Charge per appointment / job (new bookings only)
+              </label>
+              <div>
+                <label htmlFor={`appt-rate-${workspaceId}`} style={{ display: "block", fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
+                  Per-appointment rate (USD)
+                </label>
+                <input
+                  id={`appt-rate-${workspaceId}`}
+                  inputMode="decimal"
+                  style={{ ...S.input, maxWidth: 200, minHeight: 44 }}
+                  value={apptRate}
+                  onChange={(e) => setApptRate(e.target.value)}
+                  placeholder="400"
+                  disabled={!apptOn || busy}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" style={{ ...S.btn("primary"), minHeight: 44 }} onClick={saveCommercial} disabled={busy || !detail.organization?.id}>
+                  Save commercial rates
+                </button>
+                <span role="status" aria-live="polite" style={{ fontSize: 12, color: COLORS.green }}>{pricingMsg}</span>
+              </div>
+              {(detail.recentCharges || []).length > 0 && (
+                <div>
+                  <h4 style={{ fontSize: 13, fontWeight: 600, margin: "4px 0 8px" }}>Recent booking charges</h4>
+                  <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
+                    {detail.recentCharges.slice(0, 5).map((c) => (
+                      <li
+                        key={c.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          fontSize: 12,
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          background: COLORS.surfaceAlt,
+                          border: `1px solid ${COLORS.border}`,
+                        }}
+                      >
+                        <span>
+                          {c.feeKind} · {c.status}
+                          {c.description ? ` — ${c.description}` : ""}
+                        </span>
+                        <strong>${((c.amountCents || 0) / 100).toFixed(2)}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </section>
 
           <div style={S.card}>
             <div style={S.cardHeader}>SDR config</div>

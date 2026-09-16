@@ -1,17 +1,11 @@
 // ─── DEEPGRAM STT CLIENT ──────────────────────────────────────────────────────
 // Two modes, auto-selected at connect time:
 //
-// MODE 1 — WebSocket (live, ~300ms latency): dg.listen.v1.connect()
-//   Deepgram keeps a persistent WSS connection and streams transcripts back.
-//   Best for production. Requires outbound WSS on port 443 to api.deepgram.com.
+// MODE 1 — WebSocket (live): dg.listen.v1.connect()
+//   Emits a transcript only after the speaker pauses (speech_final / UtteranceEnd),
+//   so the call agent does not reply mid-sentence.
 //
-// MODE 2 — REST fallback (~2-3s latency): POST /v1/listen every 2.5s
-//   Buffers µ-law audio locally and batch-transcribes via HTTPS REST.
-//   Works on any network including restricted local dev environments.
-//   Auto-activates when WSS doesn't open within 4 seconds.
-//
-// Mid-call WSS drops: auto-reconnect up to DEEPGRAM_MAX_RECONNECTS times
-// before falling back to REST mode.
+// MODE 2 — REST fallback: batch HTTPS every few seconds when WSS is blocked.
 
 import { DeepgramClient } from "@deepgram/sdk";
 import {
@@ -19,6 +13,11 @@ import {
   DEEPGRAM_RECONNECT_DELAY_MS,
   shouldReconnectDeepgram,
 } from "./pipeline-helpers.js";
+
+// Silence Deepgram should see before declaring end-of-utterance (~1.4s).
+const UTTERANCE_END_MS = 1400;
+// Internal endpointing for is_final segments (shorter than utterance end).
+const ENDPOINTING_MS = 700;
 
 // ─── µ-LAW → PCM DECODER (needed to build WAV for REST) ──────────────────────
 
@@ -54,6 +53,24 @@ function mulawToWav(mulaw: Buffer): Buffer {
   return Buffer.concat([hdr, pcm]);
 }
 
+function pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer {
+  const hdr = Buffer.alloc(44);
+  hdr.write("RIFF", 0);
+  hdr.writeUInt32LE(36 + pcm.length, 4);
+  hdr.write("WAVE", 8);
+  hdr.write("fmt ", 12);
+  hdr.writeUInt32LE(16, 16);
+  hdr.writeUInt16LE(1, 20);
+  hdr.writeUInt16LE(1, 22);
+  hdr.writeUInt32LE(sampleRate, 24);
+  hdr.writeUInt32LE(sampleRate * 2, 28);
+  hdr.writeUInt16LE(2, 32);
+  hdr.writeUInt16LE(16, 34);
+  hdr.write("data", 36);
+  hdr.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([hdr, pcm]);
+}
+
 function hasVoice(mulaw: Buffer): boolean {
   let active = 0;
   for (const b of mulaw) {
@@ -78,16 +95,26 @@ export class DeepgramSTTClient {
   private apiKey = "";
 
   private muted = false;
+  private encoding: "mulaw" | "linear16" = "mulaw";
+  private sampleRate = 8000;
+  private model = "nova-2";
+  private onPartialCallback: ((text: string) => void) | null = null;
+
+  // Accumulate finals until speech_final / UtteranceEnd
+  private pendingUtterance = "";
 
   // Reconnect / lifecycle
   private intentionallyClosed = false;
   private reconnectAttempts = 0;
   private connecting = false;
 
-  async connect(): Promise<void> {
+  async connect(opts?: { encoding?: "mulaw" | "linear16"; sampleRate?: number; model?: string }): Promise<void> {
     if (this.connecting) return;
     this.connecting = true;
     this.intentionallyClosed = false;
+    if (opts?.encoding) this.encoding = opts.encoding;
+    if (opts?.sampleRate) this.sampleRate = opts.sampleRate;
+    if (opts?.model) this.model = opts.model;
 
     try {
       const apiKey = process.env.DEEPGRAM_API_KEY;
@@ -96,13 +123,16 @@ export class DeepgramSTTClient {
 
       const dg = new DeepgramClient({ apiKey } as any);
 
+      // interim_results + utterance_end_ms required for reliable turn boundaries
       this.connection = await dg.listen.v1.connect({
-        model:           "nova-2",
-        language:        "en-US",
-        interim_results: false,
-        endpointing:     300,
-        encoding:        "mulaw",
-        sample_rate:     8000,
+        model:            this.model,
+        language:         "en-US",
+        interim_results:  true,
+        endpointing:      ENDPOINTING_MS,
+        utterance_end_ms: UTTERANCE_END_MS,
+        vad_events:       true,
+        encoding:         this.encoding,
+        sample_rate:      this.sampleRate,
       } as any);
 
       // Switch to REST fallback if WSS doesn't open within 4 seconds
@@ -116,7 +146,7 @@ export class DeepgramSTTClient {
 
       this.connection.on("open", () => {
         clearTimeout(wssTimer);
-        console.log("🎙️  Deepgram WebSocket open (real-time mode)");
+        console.log("🎙️  Deepgram WebSocket open (real-time mode, turn-aware)");
         this.isOpen = true;
         this.reconnectAttempts = 0;
         if (this.audioQueue.length > 0) {
@@ -129,13 +159,7 @@ export class DeepgramSTTClient {
       });
 
       this.connection.on("message", (data: any) => {
-        if (data?.type === "Results") {
-          const transcript = data?.channel?.alternatives?.[0]?.transcript;
-          if (transcript && transcript.trim() && data.is_final && this.onTranscriptCallback) {
-            console.log(`🎙️  Transcript (WSS): "${transcript.trim()}"`);
-            this.onTranscriptCallback(transcript.trim());
-          }
-        }
+        this.handleLiveMessage(data);
       });
 
       this.connection.on("error", (err: Error) => {
@@ -153,6 +177,50 @@ export class DeepgramSTTClient {
     } finally {
       this.connecting = false;
     }
+  }
+
+  private handleLiveMessage(data: any): void {
+    if (!data) return;
+
+    // End-of-utterance after configured silence
+    if (data.type === "UtteranceEnd") {
+      this.flushPending("UtteranceEnd");
+      return;
+    }
+
+    if (data.type !== "Results") return;
+
+    const transcript = data?.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
+    const isFinal = !!data.is_final;
+    const speechFinal = !!data.speech_final;
+
+    if (!isFinal) {
+      if (transcript && this.onPartialCallback) this.onPartialCallback(transcript);
+      return;
+    }
+
+    if (transcript) {
+      this.pendingUtterance = this.pendingUtterance
+        ? `${this.pendingUtterance} ${transcript}`.replace(/\s+/g, " ").trim()
+        : transcript;
+      console.log(
+        `🎙️  Final fragment${speechFinal ? " (speech_final)" : ""}: "${transcript}"` +
+        (this.pendingUtterance !== transcript ? ` → pending "${this.pendingUtterance}"` : "")
+      );
+    }
+
+    // Speaker paused enough for Deepgram to mark speech complete
+    if (speechFinal) {
+      this.flushPending("speech_final");
+    }
+  }
+
+  private flushPending(reason: string): void {
+    const text = this.pendingUtterance.trim();
+    this.pendingUtterance = "";
+    if (!text || !this.onTranscriptCallback) return;
+    console.log(`🎙️  Turn complete (${reason}): "${text}"`);
+    this.onTranscriptCallback(text);
   }
 
   private handleUnexpectedClose(): void {
@@ -196,7 +264,6 @@ export class DeepgramSTTClient {
     }
 
     if (!this.connection || !this.isOpen) {
-      // Queue while connecting / reconnecting (cap to avoid memory blow-up)
       if (this.audioQueue.length < 200) this.audioQueue.push(chunk);
       return;
     }
@@ -209,8 +276,12 @@ export class DeepgramSTTClient {
     }
   }
 
-  onTranscript(callback: (text: string) => void): void {
+  onTranscript(callback: ((text: string) => void) | null): void {
     this.onTranscriptCallback = callback;
+  }
+
+  onPartial(callback: ((text: string) => void) | null): void {
+    this.onPartialCallback = callback;
   }
 
   onError(callback: (err: Error) => void): void {
@@ -222,6 +293,7 @@ export class DeepgramSTTClient {
     this.isOpen = false;
     this.audioQueue = [];
     this.restBuffer = [];
+    this.pendingUtterance = "";
     if (this.restTimer) { clearInterval(this.restTimer); this.restTimer = null; }
     if (this.connection) {
       try { this.connection.close(); } catch { /* ignore */ }
@@ -231,41 +303,36 @@ export class DeepgramSTTClient {
 
   private startRestLoop(): void {
     if (this.restTimer) return;
-    this.restTimer = setInterval(() => this.flushRestBuffer(), 5000);
+    // Longer batch window so REST mode also waits for fuller phrases
+    this.restTimer = setInterval(() => this.flushRestBuffer(), 4500);
   }
 
   private async flushRestBuffer(): Promise<void> {
     if (this.muted || this.restBuffer.length === 0) return;
 
     const chunks = this.restBuffer.splice(0);
-    const mulaw  = Buffer.concat(chunks);
+    const raw = Buffer.concat(chunks);
 
-    if (mulaw.length < 4000 || !hasVoice(mulaw)) return;
+    if (this.encoding === "linear16") {
+      if (raw.length < this.sampleRate) return;
+      try {
+        const wav = pcm16ToWav(raw, this.sampleRate);
+        const transcript = await this.transcribeWav(wav);
+        if (transcript && this.onTranscriptCallback) this.onTranscriptCallback(transcript);
+      } catch (err: any) {
+        console.error("🎙️  Deepgram REST fetch error:", err.message);
+      }
+      return;
+    }
+
+    const mulaw  = raw;
+
+    // ~0.75s of audio at 8kHz µ-law before bothering REST
+    if (mulaw.length < 6000 || !hasVoice(mulaw)) return;
 
     try {
       const wav = mulawToWav(mulaw);
-
-      const response = await fetch(
-        "https://api.deepgram.com/v1/listen?model=nova-2&language=en-US",
-        {
-          method:  "POST",
-          headers: {
-            "Authorization": `Token ${this.apiKey}`,
-            "Content-Type":  "audio/wav",
-          },
-          body: wav as any,
-        }
-      );
-
-      if (!response.ok) {
-        const err = await response.text();
-        console.error("🎙️  Deepgram REST error:", err);
-        return;
-      }
-
-      const result = await response.json() as any;
-      const transcript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim();
-
+      const transcript = await this.transcribeWav(wav);
       if (transcript && transcript.split(/\s+/).length >= 2 && this.onTranscriptCallback) {
         console.log(`🎙️  Transcript (REST): "${transcript}"`);
         this.onTranscriptCallback(transcript);
@@ -275,5 +342,26 @@ export class DeepgramSTTClient {
     } catch (err: any) {
       console.error("🎙️  Deepgram REST fetch error:", err.message);
     }
+  }
+
+  private async transcribeWav(wav: Buffer): Promise<string> {
+    const response = await fetch(
+      `https://api.deepgram.com/v1/listen?model=${encodeURIComponent(this.model)}&language=en-US`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${this.apiKey}`,
+          "Content-Type": "audio/wav",
+        },
+        body: wav as any,
+      }
+    );
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("🎙️  Deepgram REST error:", err);
+      return "";
+    }
+    const result = await response.json() as any;
+    return result?.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() || "";
   }
 }

@@ -4,6 +4,7 @@
 // access another workspace's data.
 
 import { Router, Request, Response } from "express";
+import multer from "multer";
 import { db } from "../lib/db.js";
 import {
   sdrConfigs,
@@ -19,7 +20,8 @@ import { workspaceScope } from "../middleware/workspaceScope.js";
 import { enforceTierLimits } from "../middleware/tierEnforcement.js";
 import { evaluateEnrollmentEligibility } from "../lib/sdr-eligibility.js";
 import { buildWorkspaceVectorStore } from "../lib/calling/langchain-kb.js";
-import { shouldRebuildKnowledgeBase } from "../lib/calling/kb-helpers.js";
+import { shouldRebuildKnowledgeBase, appendKnowledgeBaseDocuments } from "../lib/calling/kb-helpers.js";
+import { extractKnowledgeBaseFile } from "../lib/calling/kb-extract.js";
 import { SDR_TEMPLATE_VARS } from "../lib/sdr-template-vars.js";
 import {
   eq,
@@ -30,6 +32,10 @@ import {
 } from "drizzle-orm";
 
 const router = Router();
+const kbUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024, files: 8 },
+});
 
 // All SDR routes require auth + workspace scope
 router.use("/api/sdr", requireAuth, workspaceScope);
@@ -148,6 +154,65 @@ router.put("/api/sdr/config", async (req: Request, res: Response) => {
     res.json(config);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/sdr/kb/upload ─────────────────────────────────────────────────
+// Extract text from PDF/Word/text files and append to the workspace knowledge base.
+router.post("/api/sdr/kb/upload", kbUpload.array("files", 8), async (req: Request, res: Response) => {
+  try {
+    const workspaceId = req.workspace!.id;
+    const files = (req.files as Express.Multer.File[]) || [];
+    if (!files.length) return res.status(400).json({ error: "Choose at least one PDF, Word, or text file." });
+
+    const blocks: string[] = [];
+    const uploaded: string[] = [];
+    for (const file of files) {
+      const extracted = await extractKnowledgeBaseFile(file.originalname, file.buffer);
+      blocks.push(extracted.block);
+      uploaded.push(file.originalname);
+    }
+
+    const [existing] = await db
+      .select()
+      .from(sdrConfigs)
+      .where(eq(sdrConfigs.workspaceId, workspaceId));
+
+    const knowledgeBase = appendKnowledgeBaseDocuments(existing?.knowledgeBase, blocks);
+
+    let config;
+    if (existing) {
+      [config] = await db
+        .update(sdrConfigs)
+        .set({ knowledgeBase, updatedAt: new Date() })
+        .where(eq(sdrConfigs.id, existing.id))
+        .returning();
+    } else {
+      [config] = await db
+        .insert(sdrConfigs)
+        .values({
+          workspaceId,
+          knowledgeBase,
+          systemPrompt: "",
+          smsTemplate: "",
+          emailSubject: "",
+          emailBody: "",
+        } as any)
+        .returning();
+    }
+
+    try {
+      const result = await buildWorkspaceVectorStore(workspaceId, knowledgeBase);
+      (config as any).kbChunks = result.chunks;
+    } catch (err: any) {
+      console.error(`KB embed after upload failed for ${workspaceId}:`, err.message);
+      (config as any).kbEmbedError = err.message;
+    }
+
+    (config as any).uploaded = uploaded;
+    res.json(config);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Could not read that file" });
   }
 });
 
@@ -437,11 +502,10 @@ router.get("/api/sdr/analytics", async (req: Request, res: Response) => {
       byStatus,
       usage: workspace
         ? {
-            tier:         workspace.tier,
             leadsUsed:    workspace.monthlyLeadsUsed,
-            leadsLimit:   workspace.monthlyLeadLimit,
             minutesUsed:  workspace.monthlyMinutesUsed,
-            minutesLimit: workspace.monthlyMinuteLimit,
+            testMinutesUsed: ((workspace as any).monthlyTestMinutesUsed ?? 0) / 60,
+            testSecondsUsed: (workspace as any).monthlyTestMinutesUsed ?? 0,
           }
         : null,
     });
@@ -452,7 +516,7 @@ router.get("/api/sdr/analytics", async (req: Request, res: Response) => {
 
 // ─── POST /api/sdr/enroll/:leadId ─────────────────────────────────────────────
 // Manually enroll a lead into the SDR sequence (admin/testing override).
-// Enforces tier limits via enforceTierLimits middleware.
+// Manual enroll. Inactive workspaces are blocked via enforceTierLimits.
 // Re-enroll gate / booked / opt-out validated via sdr-eligibility (Module 7).
 
 router.post(
@@ -577,5 +641,179 @@ router.post(
     }
   }
 );
+
+// ─── GET /api/sdr/test-credits ────────────────────────────────────────────────
+
+router.get("/api/sdr/test-credits", async (req: Request, res: Response) => {
+  try {
+    const { readTestCreditSnapshot } = await import("../lib/test-credits-apply.js");
+    const credits = await readTestCreditSnapshot(req.workspace!.id);
+    if (!credits) return res.status(404).json({ error: "Workspace not found" });
+    res.json(credits);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/api/sdr/voice-stack", async (req: Request, res: Response) => {
+  try {
+    const { buildAgentStack } = await import("../lib/agent-stack.js");
+    const { ensureTestCreditColumn } = await import("../lib/schema-ensure.js");
+    await ensureTestCreditColumn();
+    const workspaceId = req.workspace!.id;
+    const [config] = await db.select().from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
+    let voices: Array<{ id: string; name: string }> = [];
+    try {
+      const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
+      voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
+    } catch {
+      voices = [];
+    }
+    const voiceId = config?.assistantVoiceId || null;
+    const voiceName = voices.find((v) => v.id === voiceId)?.name || null;
+    res.json(
+      buildAgentStack({
+        workspaceId,
+        sttModel: (config as any)?.sttModel,
+        llmModel: (config as any)?.llmModel,
+        ttsModel: (config as any)?.ttsModel,
+        voiceId,
+        voiceName,
+        voices,
+      })
+    );
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch("/api/sdr/voice-stack", async (req: Request, res: Response) => {
+  try {
+    const { ensureTestCreditColumn } = await import("../lib/schema-ensure.js");
+    const {
+      resolveSttModel,
+      resolveLlmModel,
+      resolveTtsModel,
+      buildAgentStack,
+    } = await import("../lib/agent-stack.js");
+    await ensureTestCreditColumn();
+    const workspaceId = req.workspace!.id;
+    const sttModel = resolveSttModel(req.body?.sttModel);
+    const llmModel = resolveLlmModel(req.body?.llmModel);
+    const ttsModel = resolveTtsModel(req.body?.ttsModel);
+    const assistantVoiceId =
+      typeof req.body?.assistantVoiceId === "string" && req.body.assistantVoiceId.trim()
+        ? req.body.assistantVoiceId.trim()
+        : undefined;
+
+    const [existing] = await db.select({ id: sdrConfigs.id }).from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
+    if (!existing) {
+      return res.status(400).json({ error: "Save SDR Agent configuration before choosing stack models" });
+    }
+    await db
+      .update(sdrConfigs)
+      .set({
+        sttModel,
+        llmModel,
+        ttsModel,
+        ...(assistantVoiceId ? { assistantVoiceId } : {}),
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(sdrConfigs.id, existing.id));
+
+    const [config] = await db.select().from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
+    let voices: Array<{ id: string; name: string }> = [];
+    try {
+      const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
+      voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
+    } catch {
+      voices = [];
+    }
+    const voiceId = config?.assistantVoiceId || null;
+    res.json(
+      buildAgentStack({
+        workspaceId,
+        sttModel: (config as any)?.sttModel,
+        llmModel: (config as any)?.llmModel,
+        ttsModel: (config as any)?.ttsModel,
+        voiceId,
+        voiceName: voices.find((v) => v.id === voiceId)?.name || null,
+        voices,
+      })
+    );
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/sdr/test-call ──────────────────────────────────────────────────
+// Start an in-browser rehearsal (no Twilio). Prompt can be unsaved draft.
+
+router.post("/api/sdr/test-call", async (req: Request, res: Response) => {
+  try {
+    const { createBrowserTestCall } = await import("../lib/calling/browser-test-session.js");
+    const { browserTestWsPath } = await import("../lib/calling/browser-test-protocol.js");
+    if (!req.workspace?.id || !req.organizationId) {
+      return res.status(400).json({ error: "No workspace" });
+    }
+    const systemPrompt = String(req.body?.systemPrompt || "").trim();
+    if (!systemPrompt) {
+      return res.status(400).json({ error: "Save or enter a system prompt before testing" });
+    }
+    const { readTestCreditSnapshot } = await import("../lib/test-credits-apply.js");
+    const { decideTestCallStart, sessionBudgetSeconds } = await import("../lib/test-credits.js");
+    const credits = await readTestCreditSnapshot(req.workspace.id);
+    const allowPaid = req.body?.allowPaid === true;
+    if (credits) {
+      const decision = decideTestCallStart({ snapshot: credits, allowPaid });
+      if (!decision.start) {
+        return res.status(decision.reason === "blocked" ? 402 : 403).json({
+          error: decision.message,
+          reason: decision.reason,
+          credits,
+        });
+      }
+    }
+    const budget = credits
+      ? sessionBudgetSeconds({
+          testRemainingSeconds: credits.testRemainingSeconds,
+          paidRemainingSeconds: credits.paidRemainingSeconds,
+          allowPaid,
+        })
+      : sessionBudgetSeconds({ testRemainingSeconds: 0, paidRemainingSeconds: 0, allowPaid: false });
+    if (budget.budgetSeconds <= 0) {
+      return res.status(402).json({
+        error: "No minutes left for this rehearsal.",
+        reason: "blocked",
+        credits,
+      });
+    }
+    const [cfg] = await db
+      .select()
+      .from(sdrConfigs)
+      .where(eq(sdrConfigs.workspaceId, req.workspace.id));
+    const { sessionId } = createBrowserTestCall({
+      workspaceId: req.workspace.id,
+      organizationId: req.organizationId,
+      systemPrompt,
+      assistantName: req.body?.assistantName || cfg?.assistantName || null,
+      assistantVoiceId: req.body?.assistantVoiceId || cfg?.assistantVoiceId || null,
+      sttModel: (cfg as any)?.sttModel || null,
+      llmModel: (cfg as any)?.llmModel || null,
+      ttsModel: (cfg as any)?.ttsModel || null,
+      allowPaid,
+      budgetSeconds: budget.budgetSeconds,
+    });
+    res.status(201).json({
+      sessionId,
+      path: browserTestWsPath(sessionId),
+      credits,
+      budgetSeconds: budget.budgetSeconds,
+      budgetMinutes: budget.budgetMinutes,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

@@ -223,26 +223,52 @@ export async function createStripeCustomer(orgId: number, email: string, orgName
 export async function createCheckoutSession(
   orgId: number,
   stripeCustomerId: string,
-  priceId: string,
+  priceId: string | null,
   successUrl: string,
   cancelUrl: string,
-  planKey?: string
+  planKey?: string,
+  unitAmountCents?: number
 ) {
   if (!stripe) throw new Error("Stripe not configured");
+
+  const amount =
+    typeof unitAmountCents === "number" && unitAmountCents > 0 ? Math.round(unitAmountCents) : 0;
+  const lineItems =
+    amount > 0
+      ? [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: "Levios monthly retainer" },
+              unit_amount: amount,
+              recurring: { interval: "month" as const },
+            },
+            quantity: 1,
+          },
+        ]
+      : [{ price: priceId as string, quantity: 1 }];
+
+  if (amount <= 0 && !priceId) {
+    throw new Error("Missing Stripe price for checkout");
+  }
 
   const session = await stripe.checkout.sessions.create({
     customer: stripeCustomerId,
     mode: "subscription",
-    line_items: [{ price: priceId, quantity: 1 }],
+    line_items: lineItems,
     success_url: successUrl,
     cancel_url: cancelUrl,
+    payment_method_collection: "always",
     metadata: {
       organizationId: String(orgId),
       ...(planKey ? { planKey } : {}),
     },
-    subscription_data: planKey
-      ? { metadata: { planKey, organizationId: String(orgId) } }
-      : undefined,
+    subscription_data: {
+      metadata: {
+        organizationId: String(orgId),
+        ...(planKey ? { planKey } : {}),
+      },
+    },
   });
 
   return session;
@@ -288,6 +314,14 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
 
         // Activate workspace SDR with correct tier limits
         await activateWorkspaceForOrg(orgId, plan);
+
+        const { activateOrgBillingCycle } = await import("./subscription-billing.js");
+        await activateOrgBillingCycle({
+          organizationId: orgId,
+          periodStart: subscriptionPeriodStartDate(subscription) || new Date(),
+          periodEnd: subscriptionPeriodEndDate(subscription) || addOneMonthFallback(),
+          firstChargePaid: session.payment_status === "paid" || session.status === "complete",
+        });
       }
       break;
     }
@@ -313,6 +347,16 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
         if (paidActive) {
           await activateWorkspaceForOrg(updatedOrg.id, plan);
         }
+        await syncOrgCancellationFromStripe(updatedOrg.id, subscription);
+        if (event.type === "customer.subscription.created") {
+          const { activateOrgBillingCycle } = await import("./subscription-billing.js");
+          await activateOrgBillingCycle({
+            organizationId: updatedOrg.id,
+            periodStart: subscriptionPeriodStartDate(subscription) || new Date(),
+            periodEnd: subscriptionPeriodEndDate(subscription) || addOneMonthFallback(),
+            firstChargePaid: false,
+          });
+        }
       }
       break;
     }
@@ -323,7 +367,13 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
 
       await db
         .update(organizations)
-        .set({ stripeSubscriptionId: null, stripePriceId: null, plan: "free" })
+        .set({
+          stripeSubscriptionId: null,
+          stripePriceId: null,
+          plan: "free",
+          nextBillingAt: null,
+          subscriptionCanceledAt: new Date(),
+        })
         .where(eq(organizations.stripeCustomerId, customerId));
 
       // Deactivate workspace SDR — no active subscription
@@ -337,6 +387,12 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
       const customerId = invoice.customer as string;
       if (customerId) {
         await resetUsageForCustomer(customerId);
+        const { markMonthlyPaidFromStripeInvoice } = await import("./subscription-billing.js");
+        await markMonthlyPaidFromStripeInvoice(customerId, invoice);
+        const subId = invoiceSubscriptionId(invoice);
+        if (subId && (invoice.amount_paid || 0) > 0) {
+          await pauseSubscriptionCollection(subId);
+        }
       }
       break;
     }
@@ -345,8 +401,33 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
       const invoice = event.data.object as Stripe.Invoice;
       const customerId = invoice.customer as string;
       console.warn(`⚠️  Payment failed for customer ${customerId}`);
-      // Deactivate SDR until payment is resolved
       await deactivateWorkspaceForCustomer(customerId);
+      const [failedOrg] = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.stripeCustomerId, customerId))
+        .limit(1);
+      if (failedOrg) {
+        void import("./product-email.js")
+          .then(({ notifyOrgPaymentFailed }) =>
+            notifyOrgPaymentFailed({
+              organizationId: failedOrg.id,
+              amountCents: invoice.amount_due ?? null,
+              errorMessage: "Stripe invoice payment failed",
+            })
+          )
+          .catch((err: Error) => console.error("Payment failed email:", err.message));
+      }
+      break;
+    }
+
+    case "payment_intent.succeeded": {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      const chargeId = Number(intent.metadata?.chargeId || 0);
+      if (chargeId) {
+        const { markChargePaidFromPaymentIntent } = await import("./subscription-billing.js");
+        await markChargePaidFromPaymentIntent(chargeId, intent.id);
+      }
       break;
     }
   }
@@ -358,19 +439,163 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
 function subscriptionPeriodEndUnix(subscription: Stripe.Subscription): number | null {
   const fromItem = subscription.items?.data?.[0]?.current_period_end;
   if (typeof fromItem === "number") return fromItem;
+  const root = (subscription as Stripe.Subscription & { current_period_end?: number }).current_period_end;
+  if (typeof root === "number") return root;
   if (typeof subscription.cancel_at === "number") return subscription.cancel_at;
   return null;
 }
 
+function subscriptionPeriodStartUnix(subscription: Stripe.Subscription): number | null {
+  const fromItem = subscription.items?.data?.[0]?.current_period_start;
+  if (typeof fromItem === "number") return fromItem;
+  const root = (subscription as Stripe.Subscription & { current_period_start?: number }).current_period_start;
+  return typeof root === "number" ? root : null;
+}
+
+export function subscriptionPeriodEndDate(subscription: Stripe.Subscription): Date | null {
+  const unix = subscriptionPeriodEndUnix(subscription);
+  return unix ? new Date(unix * 1000) : null;
+}
+
+export function subscriptionPeriodStartDate(subscription: Stripe.Subscription): Date | null {
+  const unix = subscriptionPeriodStartUnix(subscription);
+  return unix ? new Date(unix * 1000) : null;
+}
+
+function addOneMonthFallback(): Date {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return d;
+}
+
+function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const raw = invoice as Stripe.Invoice & {
+    subscription?: string | Stripe.Subscription | null;
+    parent?: { subscription_details?: { subscription?: string | null } | null } | null;
+  };
+  if (typeof raw.subscription === "string" && raw.subscription) return raw.subscription;
+  if (raw.subscription && typeof raw.subscription === "object" && "id" in raw.subscription) {
+    return raw.subscription.id;
+  }
+  const fromParent = raw.parent?.subscription_details?.subscription;
+  return typeof fromParent === "string" && fromParent ? fromParent : null;
+}
+
 function serializeSubscriptionStatus(subscription: Stripe.Subscription) {
   const endUnix = subscriptionPeriodEndUnix(subscription);
+  const startUnix = subscriptionPeriodStartUnix(subscription);
   return {
     status: subscription.status,
+    currentPeriodStart: startUnix ? new Date(startUnix * 1000) : null,
     currentPeriodEnd: endUnix ? new Date(endUnix * 1000) : null,
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
     /** Stripe subscriptions auto-renew unless cancel_at_period_end is set */
     autoRenew: subscription.status === "active" && !subscription.cancel_at_period_end,
   };
+}
+
+async function syncOrgCancellationFromStripe(orgId: number, subscription: Stripe.Subscription) {
+  const canceled = Boolean(subscription.cancel_at_period_end);
+  const [org] = await db
+    .select({
+      subscriptionCanceledAt: organizations.subscriptionCanceledAt,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org) return;
+  if (canceled && !org.subscriptionCanceledAt) {
+    await db
+      .update(organizations)
+      .set({ subscriptionCanceledAt: new Date() })
+      .where(eq(organizations.id, orgId));
+  } else if (!canceled && org.subscriptionCanceledAt) {
+    await db
+      .update(organizations)
+      .set({ subscriptionCanceledAt: null })
+      .where(eq(organizations.id, orgId));
+  }
+}
+
+/** Stop Stripe from invoicing month 2+ — we collect the commercial amount on each org's anniversary. */
+export async function pauseSubscriptionCollection(stripeSubscriptionId: string) {
+  if (!stripe) return;
+  try {
+    await stripe.subscriptions.update(stripeSubscriptionId, {
+      pause_collection: { behavior: "void" },
+    });
+  } catch (err: any) {
+    console.warn(`Could not pause Stripe collection for ${stripeSubscriptionId}:`, err?.message || err);
+  }
+}
+
+export async function getDefaultPaymentMethodId(stripeCustomerId: string): Promise<string | null> {
+  if (!stripe) return null;
+  const customer = await stripe.customers.retrieve(stripeCustomerId);
+  if (customer.deleted) return null;
+  const fromSettings = customer.invoice_settings?.default_payment_method;
+  if (typeof fromSettings === "string" && fromSettings) return fromSettings;
+  if (fromSettings && typeof fromSettings === "object" && "id" in fromSettings) {
+    return fromSettings.id;
+  }
+  const listed = await stripe.paymentMethods.list({
+    customer: stripeCustomerId,
+    type: "card",
+    limit: 1,
+  });
+  return listed.data[0]?.id || null;
+}
+
+export async function chargeCustomerOffSession(opts: {
+  customerId: string;
+  amountCents: number;
+  description: string;
+  idempotencyKey: string;
+  metadata: Record<string, string>;
+}): Promise<{ paymentIntentId: string; status: string }> {
+  if (!stripe) throw new Error("Stripe not configured");
+  const paymentMethod = await getDefaultPaymentMethodId(opts.customerId);
+  if (!paymentMethod) {
+    throw Object.assign(new Error("No card on file. Add a payment method on Billing."), {
+      code: "no_payment_method",
+    });
+  }
+
+  const intent = await stripe.paymentIntents.create(
+    {
+      amount: opts.amountCents,
+      currency: "usd",
+      customer: opts.customerId,
+      payment_method: paymentMethod,
+      off_session: true,
+      confirm: true,
+      description: opts.description,
+      metadata: opts.metadata,
+    },
+    { idempotencyKey: opts.idempotencyKey }
+  );
+
+  if (intent.status !== "succeeded") {
+    throw Object.assign(
+      new Error(`Card charge did not succeed (${intent.status}).`),
+      { code: intent.status, paymentIntentId: intent.id }
+    );
+  }
+
+  return { paymentIntentId: intent.id, status: intent.status };
+}
+
+export function deactivateWorkspaceForFailedCharge(stripeCustomerId: string) {
+  return deactivateWorkspaceForCustomer(stripeCustomerId);
+}
+
+export function resetUsageForStripeCustomer(stripeCustomerId: string) {
+  return resetUsageForCustomer(stripeCustomerId);
+}
+
+export async function retrieveStripeSubscription(stripeSubscriptionId: string) {
+  if (!stripe) return null;
+  return stripe.subscriptions.retrieve(stripeSubscriptionId);
 }
 
 // Get subscription status for an org

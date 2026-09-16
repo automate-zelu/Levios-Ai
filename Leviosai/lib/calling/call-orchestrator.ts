@@ -4,23 +4,22 @@
 //
 // Steps:
 //   1. Load enrollment + lead + workspace + config from DB
-//   2. Minute-limit gate → fall through to SMS if exhausted
-//   3. TCPA compliance pre-check (quiet hours, DNC, call frequency)
-//   4. Create sdr_call_sessions row
-//   5. Transition enrollment → call_initiated
-//   6. Place outbound Twilio call via workspace sub-account (lib/twilio-subaccount.ts)
-//   7. Store Twilio call SID for correlation
+//   2. TCPA compliance pre-check (quiet hours, DNC, call frequency)
+//   3. Create sdr_call_sessions row
+//   4. Transition enrollment → call_initiated
+//   5. Place outbound Twilio call via workspace sub-account (lib/twilio-subaccount.ts)
+//   6. Store Twilio call SID for correlation
 
 import { db } from "../db.js";
 import { sdrCallSessions, sdrEnrollments, sdrConfigs, leads, workspaces } from "../schema.js";
 import type { EnrollmentStatus } from "../schema.js";
 import { stateMachine, TERMINAL_STATUSES } from "../sdr-state-machine.js";
 import { enqueueJob, fallThroughToSms, storeEnrollmentJobId } from "../sdr-queue.js";
-import { isMinuteLimitReached } from "../sdr-m1-logic.js";
 import { getClientForWorkspace } from "../twilio-subaccount.js";
 import { checkCallCompliance } from "../compliance.js";
 import { eq, sql } from "drizzle-orm";
 import { isSdrDryRun } from "../sdr-dry-run.js";
+import { liveCallRegistry } from "./live-call-registry.js";
 
 // ─── ORCHESTRATOR ─────────────────────────────────────────────────────────────
 
@@ -73,17 +72,6 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
     .where(eq(workspaces.id, enrollment.workspaceId));
 
   if (!workspace) throw new Error(`Workspace ${enrollment.workspaceId} not found`);
-
-  // ── Minute-limit gate (plan §15.2) ──────────────────────────────────────────
-  // Next INITIATE_CALL is blocked; sequence falls through directly to SMS.
-  if (isMinuteLimitReached(workspace.monthlyMinutesUsed, workspace.monthlyMinuteLimit)) {
-    console.log(
-      `SDR Call: workspace ${workspace.id} at minute limit ` +
-      `(${workspace.monthlyMinutesUsed}/${workspace.monthlyMinuteLimit}) — fall through to SMS`
-    );
-    await fallThroughToSms(enrollmentId, "minute_limit", 0);
-    return;
-  }
 
   // Twilio must be provisioned before dialling (skipped in SDR_DRY_RUN)
   if (!workspace.twilioPhoneNumber && !isSdrDryRun()) {
@@ -246,6 +234,9 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
     .update(sdrCallSessions)
     .set({ twilioCallSid: call.sid })
     .where(eq(sdrCallSessions.id, session.id));
+
+  liveCallRegistry.start(session.id, workspace.id, []);
+  liveCallRegistry.setStatus(session.id, "initiated");
 
   console.log(`SDR Call: initiated call ${call.sid} for lead ${lead.id} (session ${session.id})`);
 }

@@ -177,8 +177,9 @@ describe("M1 minute-limit → SMS fall-through", () => {
     assert.equal(billableCallMinutes(1, { callStatus: "no-answer" }), 0);
     assert.equal(billableCallMinutes(30, { callStatus: "busy" }), 0);
     assert.equal(billableCallMinutes(5, { callStatus: "completed", outcome: null }), 0);
-    assert.equal(billableCallMinutes(65, { callStatus: "completed", outcome: "answered" }), 2);
-    assert.equal(billableCallMinutes(12, { callStatus: "completed", outcome: "booked" }), 1);
+    assert.equal(billableCallMinutes(65, { callStatus: "completed", outcome: "answered" }), 65 / 60);
+    assert.equal(billableCallMinutes(12, { callStatus: "completed", outcome: "booked" }), 12 / 60);
+    assert.equal(billableCallMinutes(60, { callStatus: "completed", outcome: "answered" }), 1);
   });
 
   it("from pending: advances call_initiated → call_no_answer then SMS", () => {

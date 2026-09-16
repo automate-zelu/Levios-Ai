@@ -25,6 +25,10 @@ describe("M4 tier definitions (plan §15.1)", () => {
 
   it("matches plan lead / minute / seat limits", () => {
     assert.equal(TIER_LIMITS.starter.monthlyLeadLimit, 500);
+    assert.equal(TIER_LIMITS.starter.monthlyTestMinuteLimit, 20);
+    assert.equal(TIER_LIMITS.growth.monthlyTestMinuteLimit, 40);
+    assert.equal(TIER_LIMITS.scale.monthlyTestMinuteLimit, 60);
+    assert.equal(TIER_LIMITS.enterprise.monthlyTestMinuteLimit, 60);
     assert.equal(TIER_LIMITS.starter.monthlyMinuteLimit, 1_000);
     assert.equal(TIER_LIMITS.starter.seatLimit, 2);
 

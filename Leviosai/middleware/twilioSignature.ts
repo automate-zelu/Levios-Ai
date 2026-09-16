@@ -36,14 +36,24 @@ function isDev(): boolean {
 // SMS webhooks carry the destination phone number in `To`. We use it to find
 // the workspace and get their (decrypted) Twilio auth token.
 
-async function resolveAuthTokenByPhone(toPhone: string): Promise<string | null> {
-  try {
-    const [ws] = await db
-      .select({ twilioSubAuthToken: workspaces.twilioSubAuthToken })
-      .from(workspaces)
-      .where(eq(workspaces.twilioPhoneNumber, toPhone))
-      .limit(1);
+function digitsOf(phone: string): string {
+  const d = (phone || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) return d.slice(1);
+  return d.length >= 10 ? d.slice(-10) : d;
+}
 
+async function resolveAuthTokenByPhone(toPhone: string): Promise<string | null> {
+  const want = digitsOf(toPhone);
+  if (!want) return null;
+  try {
+    const rows = await db
+      .select({
+        twilioSubAuthToken: workspaces.twilioSubAuthToken,
+        twilioPhoneNumber: workspaces.twilioPhoneNumber,
+      })
+      .from(workspaces);
+
+    const ws = rows.find((r) => digitsOf(r.twilioPhoneNumber || "") === want);
     if (ws?.twilioSubAuthToken) {
       return decrypt(ws.twilioSubAuthToken);
     }
@@ -51,6 +61,34 @@ async function resolveAuthTokenByPhone(toPhone: string): Promise<string | null> 
     // Decryption failure — fall back to env var token
   }
   return null;
+}
+
+function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function candidateWebhookUrls(req: Request): string[] {
+  const path = req.originalUrl || req.url || "";
+  const pathNoQuery = path.split("?")[0];
+  const base = (process.env.BASE_URL ?? "").replace(/\/$/, "");
+  const rawProto = String(req.headers["x-forwarded-proto"] ?? req.protocol ?? "https");
+  const proto = rawProto.split(",")[0].trim() || "https";
+  const rawHost = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "");
+  const host = rawHost.split(",")[0].trim();
+  return uniqueNonEmpty([
+    base ? `${base}${path}` : null,
+    base ? `${base}${pathNoQuery}` : null,
+    host ? `${proto}://${host}${path}` : null,
+    host ? `${proto}://${host}${pathNoQuery}` : null,
+    host ? `https://${host}${pathNoQuery}` : null,
+  ]);
 }
 
 // ─── RESOLVE AUTH TOKEN BY CALL SESSION ──────────────────────────────────────
@@ -102,28 +140,33 @@ export function twilioSignatureMiddleware(
       return;
     }
 
-    // Reconstruct the full URL Twilio signed
-    const proto = req.headers["x-forwarded-proto"] ?? req.protocol ?? "https";
-    const host  = req.headers["x-forwarded-host"] ?? req.headers.host ?? "";
-    const url   = `${proto}://${host}${req.originalUrl}`;
+    const urls = candidateWebhookUrls(req);
 
-    // Resolve auth token: custom resolver → env var fallback
-    let authToken: string | null = resolver ? await resolver(req) : null;
-    if (!authToken) {
-      authToken =
-        process.env.TWILIO_AUTH_TOKEN ??
-        process.env.TWILIO_MASTER_AUTH_TOKEN ??
-        null;
-    }
+    const tokens = uniqueNonEmpty([
+      resolver ? await resolver(req) : null,
+      process.env.TWILIO_AUTH_TOKEN,
+      process.env.TWILIO_MASTER_AUTH_TOKEN,
+    ]);
 
-    if (!authToken) {
+    if (tokens.length === 0) {
       console.warn("Twilio signature validation: no auth token available — skipping");
       return next();
     }
 
-    const valid = twilio.validateRequest(authToken, signature, url, req.body ?? {});
+    const body = req.body ?? {};
+    let valid = false;
+    for (const authToken of tokens) {
+      for (const url of urls) {
+        if (twilio.validateRequest(authToken, signature, url, body)) {
+          valid = true;
+          break;
+        }
+      }
+      if (valid) break;
+    }
+
     if (!valid) {
-      console.warn(`Twilio signature validation FAILED for ${url}`);
+      console.warn(`Twilio signature validation FAILED for ${urls.join(" | ")}`);
       res.status(403).json({ error: "Invalid Twilio signature" });
       return;
     }
