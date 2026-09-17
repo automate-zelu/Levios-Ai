@@ -16,6 +16,7 @@ import AdminPanel from "./pages/AdminPanel.jsx";
 import LeadDetailPage from "./pages/LeadDetailPage.jsx";
 import VoiceAIPage from "./pages/VoiceAIPage.jsx";
 import BookingsPage from "./pages/BookingsPage.jsx";
+import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
 
@@ -795,6 +796,13 @@ function LoginPage({ onLogin }) {
           <span style={{ color: COLORS.orange, cursor: "pointer" }} onClick={() => navigate("/register")}>
             Create account
           </span>
+        </p>
+        <p style={{ color: COLORS.textDim, fontSize: 11, marginTop: 14, lineHeight: 1.6 }}>
+          <span style={{ color: COLORS.orange, cursor: "pointer" }} onClick={() => navigate("/home")}>Home</span>
+          {" · "}
+          <span style={{ color: COLORS.orange, cursor: "pointer" }} onClick={() => navigate("/privacy")}>Privacy</span>
+          {" · "}
+          <span style={{ color: COLORS.orange, cursor: "pointer" }} onClick={() => navigate("/terms")}>Terms</span>
         </p>
         <p style={{ color: COLORS.textDim, fontSize: 11, marginTop: 8 }}>Powered by <span style={{ color: COLORS.orange }}>Leviosai, Inc.</span> — Part of The Reaction Stack</p>
       </div>
@@ -3745,6 +3753,11 @@ export default function CatalystApp() {
     navigate("/bookings", { replace: true });
     return null;
   }
+
+  // ── Public marketing / legal (Google OAuth consent URLs) ───────────────────
+  if (location.pathname === "/home") return <PublicHomePage />;
+  if (location.pathname === "/privacy") return <PublicPrivacyPage />;
+  if (location.pathname === "/terms") return <PublicTermsPage />;
 
   // ── /admin-login route — public, no auth required ──────────────────────────
   if (location.pathname === "/admin-login") {
