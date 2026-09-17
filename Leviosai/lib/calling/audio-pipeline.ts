@@ -32,6 +32,9 @@ import {
   TTS_TIMEOUT_MS,
   LEAD_TURN_GAP_MS,
   LEAD_TURN_MIN_WORDS,
+  TWILIO_MULAW_FRAME_BYTES,
+  TWILIO_MEDIA_FRAME_MS,
+  GREETING_SILENCE_REPROMPT_MS,
   measureLatency,
   withTimeout,
   mergeUtteranceFragments,
@@ -70,6 +73,7 @@ export class AudioPipeline {
   /** Fragments collected while lead is still talking */
   private pendingLeadTurn = "";
   private leadTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  private silenceRepromptTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsModel: string | null = null;
 
   async handleStream(ws: WebSocket, sessionId: string): Promise<void> {
@@ -91,6 +95,7 @@ export class AudioPipeline {
 
     ws.on("close", () => {
       const remaining = trackStreamClose(sessionId);
+      this.clearSilenceReprompt();
       // Twilio <Say> fallback redirects the call → WS closes intentionally.
       // Another stream may already be open, or reconnect is still pending.
       if (remaining > 0 || isSayFallbackRedirect(sessionId)) {
@@ -222,10 +227,15 @@ export class AudioPipeline {
           if (resumingAfterSay) {
             clearSayFallbackRedirect(sessionId);
             console.log(`📞 Skipping greeting — resumed after Twilio <Say> for ${sessionId}`);
+            this.scheduleSilenceReprompt(ws, sessionId, config.assistantVoiceId);
             break;
           }
 
           try {
+            // Brief settle — international carriers often open the stream before the human is on the line.
+            await new Promise((r) => setTimeout(r, 600));
+            if (this.ended) break;
+
             console.log(`🤖 Generating greeting for session ${sessionId}...`);
             const rawGreeting = await withTimeout(
               this.agent.respond(
@@ -244,16 +254,18 @@ export class AudioPipeline {
             }
             console.log(`🤖 Greeting: "${greeting.substring(0, 100)}"`);
             this.appendLive(sessionId, "ai", greeting);
+
+            // Guaranteed audible opening via Twilio <Say> (Media Stream TTS can be silent on some legs).
+            // Stream reconnects afterward; resume path skips re-greeting and arms silence re-prompt.
             this.isSpeaking = true;
-            this.deepgram.muteInput();
             try {
-              await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
+              await this.fallbackToTwilioSay(sessionId, greeting, "greeting_via_twilio_say");
             } finally {
-              this.deepgram.unmuteInput();
+              this.isSpeaking = false;
+              this.abortTTS = null;
             }
           } catch (err: any) {
             console.error(`Greeting failed for session ${sessionId}:`, err.message);
-          } finally {
             this.isSpeaking = false;
             this.abortTTS = null;
           }
@@ -283,6 +295,43 @@ export class AudioPipeline {
     }
   }
 
+  private clearSilenceReprompt(): void {
+    if (this.silenceRepromptTimer) {
+      clearTimeout(this.silenceRepromptTimer);
+      this.silenceRepromptTimer = null;
+    }
+  }
+
+  /**
+   * If the lead never speaks after the opening, nudge once so silence isn't dead air.
+   */
+  private scheduleSilenceReprompt(
+    ws: WebSocket,
+    sessionId: string,
+    voiceId: string | null | undefined
+  ): void {
+    this.clearSilenceReprompt();
+    this.silenceRepromptTimer = setTimeout(() => {
+      void (async () => {
+        if (this.ended || transcriptHasLeadSpeech(this.transcript.getFullTranscript())) return;
+        const nudge = "Hello? Can you hear me okay?";
+        console.log(`📞 Silence re-prompt for session ${sessionId}`);
+        this.appendLive(sessionId, "ai", nudge);
+        this.isSpeaking = true;
+        this.deepgram.muteInput();
+        try {
+          await this.streamTTS(ws, nudge, voiceId, sessionId);
+        } catch (err: any) {
+          console.error(`Silence re-prompt failed for ${sessionId}:`, err.message);
+        } finally {
+          this.deepgram.unmuteInput();
+          this.isSpeaking = false;
+          this.abortTTS = null;
+        }
+      })();
+    }, GREETING_SILENCE_REPROMPT_MS);
+  }
+
   private clearTwilioAudio(ws: WebSocket): void {
     if (ws.readyState === ws.OPEN && this.streamSid) {
       ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
@@ -300,6 +349,7 @@ export class AudioPipeline {
     voiceId: string | null | undefined
   ): Promise<void> {
     if (this.ended) return;
+    this.clearSilenceReprompt();
 
     if (this.isSpeaking) {
       if (this.abortTTS) {
@@ -470,12 +520,14 @@ export class AudioPipeline {
     sessionId: string
   ): Promise<void> {
     let aborted = false;
-    let receivedAudio = false;
+    this.abortTTS = () => {
+      aborted = true;
+    };
 
-    let audioStream;
+    let audio: Buffer;
     try {
-      audioStream = await withTimeout(
-        this.elevenlabs.synthesizeStream(text, voiceId, this.ttsModel),
+      audio = await withTimeout(
+        this.elevenlabs.synthesizeMulawBuffer(text, voiceId, this.ttsModel),
         TTS_TIMEOUT_MS,
         "ElevenLabs TTS"
       );
@@ -484,95 +536,59 @@ export class AudioPipeline {
       return;
     }
 
-    this.abortTTS = () => {
-      aborted = true;
-      try { audioStream.destroy(); } catch { /* ignore */ }
-    };
+    // Minimum audible payload (~0.25s). Anything smaller is treated as failed synthesis.
+    if (!audio.length || audio.length < 2000) {
+      await this.fallbackToTwilioSay(
+        sessionId,
+        text,
+        `ElevenLabs returned only ${audio.length} μ-law bytes`
+      );
+      return;
+    }
 
-    return new Promise((resolve) => {
-      let firstChunk = true;
-      let isMp3 = false;
-      let settled = false;
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
+    if (!this.streamSid || ws.readyState !== ws.OPEN) {
+      await this.fallbackToTwilioSay(sessionId, text, "Twilio stream not open for TTS");
+      return;
+    }
 
-      // Hard safety: if stream hangs after open, don't block the turn forever
-      const hangTimer = setTimeout(() => {
-        if (!aborted) {
-          console.warn(`TTS stream hang timeout for session ${sessionId}`);
-          try { audioStream.destroy(); } catch { /* ignore */ }
-        }
-        if (!receivedAudio && !aborted) {
-          this.fallbackToTwilioSay(sessionId, text, "ElevenLabs stream hang")
-            .finally(() => settle());
-          return;
-        }
-        settle();
-      }, TTS_TIMEOUT_MS);
+    let sent = 0;
+    for (let i = 0; i < audio.length; i += TWILIO_MULAW_FRAME_BYTES) {
+      if (aborted || this.ended || ws.readyState !== ws.OPEN) break;
+      const frame = audio.subarray(i, Math.min(i + TWILIO_MULAW_FRAME_BYTES, audio.length));
+      // Pad final short frame with μ-law silence (0xff) so Twilio gets a full 20ms packet
+      const payload =
+        frame.length === TWILIO_MULAW_FRAME_BYTES
+          ? frame
+          : Buffer.concat([frame, Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - frame.length, 0xff)]);
 
-      audioStream.on("data", (rawChunk: any) => {
-        if (aborted) { clearTimeout(hangTimer); settle(); return; }
+      ws.send(
+        JSON.stringify({
+          event: "media",
+          streamSid: this.streamSid,
+          media: { payload: payload.toString("base64") },
+        })
+      );
+      sent += payload.length;
+      await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
+    }
 
-        let chunk: Buffer = Buffer.isBuffer(rawChunk)
-          ? rawChunk
-          : Buffer.from(rawChunk as ArrayBufferLike);
+    console.log(
+      `🔊 Sent ${sent} μ-law bytes to Twilio (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
+    );
 
-        if (firstChunk) {
-          firstChunk = false;
-          const tag = chunk.slice(0, 4).toString("ascii");
-          console.log(`🔊 First audio chunk: ${chunk.length} bytes`);
-          if (tag === "RIFF") {
-            chunk = chunk.slice(44);
-          } else if (tag.startsWith("ID3")) {
-            isMp3 = true;
-            console.warn(`⚠️  ElevenLabs returned MP3 (ID3) — check ?output_format=ulaw_8000`);
-          }
-        }
+    if (!aborted && ws.readyState === ws.OPEN && this.streamSid) {
+      ws.send(
+        JSON.stringify({
+          event: "mark",
+          streamSid: this.streamSid,
+          mark: { name: "tts-done" },
+        })
+      );
+    }
 
-        if (isMp3 || chunk.length === 0) return;
-        receivedAudio = true;
-
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({
-            event:     "media",
-            streamSid: this.streamSid,
-            media:     { payload: chunk.toString("base64") },
-          }));
-        }
-      });
-
-      audioStream.on("end", () => {
-        clearTimeout(hangTimer);
-        if (!aborted && ws.readyState === ws.OPEN && this.streamSid) {
-          ws.send(JSON.stringify({
-            event:     "mark",
-            streamSid: this.streamSid,
-            mark:      { name: "tts-done" },
-          }));
-        }
-        settle();
-      });
-
-      audioStream.on("error", (err: Error) => {
-        clearTimeout(hangTimer);
-        if (!aborted) {
-          console.error(`ElevenLabs TTS error for session ${sessionId}:`, err.message);
-          if (!receivedAudio) {
-            this.fallbackToTwilioSay(sessionId, text, err.message).finally(() => settle());
-            return;
-          }
-        }
-        settle();
-      });
-
-      audioStream.on("close", () => {
-        clearTimeout(hangTimer);
-        settle();
-      });
-    });
+    if (!aborted && sent < 2000) {
+      await this.fallbackToTwilioSay(sessionId, text, `Only ${sent} bytes reached Twilio`);
+    }
   }
 
   /** Twilio status callback — finalize even if the media socket is still open. */
@@ -584,6 +600,7 @@ export class AudioPipeline {
     if (this.ended) return;
     this.ended = true;
     clearSayFallbackRedirect(sessionId);
+    this.clearSilenceReprompt();
 
     if (this.leadTurnTimer) {
       clearTimeout(this.leadTurnTimer);

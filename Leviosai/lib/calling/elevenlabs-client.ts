@@ -103,6 +103,53 @@ export class ElevenLabsClient {
     return raw;
   }
 
+  /**
+   * Full μ-law/8000 buffer for Twilio Media Streams.
+   * Prefer this over streaming when we need to pace 20ms frames reliably.
+   */
+  async synthesizeMulawBuffer(
+    text: string,
+    voiceId?: string | null,
+    modelId?: string | null
+  ): Promise<Buffer> {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not set");
+
+    const vid = voiceId || DEFAULT_VOICE_ID;
+    const model = modelId || "eleven_turbo_v2";
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${vid}?output_format=ulaw_8000`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "audio/ulaw",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: model,
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(friendlyElevenLabsError(response.status, body));
+    }
+
+    let buf = Buffer.from(await response.arrayBuffer());
+    // Strip WAV header if ElevenLabs wraps μ-law
+    if (buf.length >= 44 && buf.slice(0, 4).toString("ascii") === "RIFF") {
+      buf = buf.slice(44);
+    }
+    console.log(`🔊 ElevenLabs μ-law buffer: ${buf.length} bytes (~${(buf.length / 8000).toFixed(2)}s)`);
+    return buf;
+  }
+
   /** Browser test-call playback — MP3 buffer (not Twilio μ-law). */
   async synthesizeMp3(text: string, voiceId?: string | null, modelId?: string | null): Promise<Buffer> {
     const apiKey = process.env.ELEVENLABS_API_KEY;

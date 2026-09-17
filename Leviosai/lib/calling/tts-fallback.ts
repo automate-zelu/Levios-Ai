@@ -98,7 +98,7 @@ export function buildSayThenStreamTwiml(
     `<Response>` +
     `<Say voice="${voiceAttr}">${spoken}</Say>` +
     `<Connect>` +
-    `<Stream url="${url}" track="inbound_track" />` +
+    `<Stream url="${url}" track="both_tracks" />` +
     `</Connect>` +
     `</Response>`
   );

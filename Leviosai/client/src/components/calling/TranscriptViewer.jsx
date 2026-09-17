@@ -34,7 +34,7 @@ export function TranscriptViewer({ transcript, lines, summary, live = false, max
 
         {!parsed.length ? (
           <div style={{ color: COLORS.textMuted, fontSize: 13, padding: "12px 0" }}>
-            {live ? "Waiting for speech…" : "No transcript yet."}
+            {live ? "Waiting for the agent or lead to speak…" : "No transcript yet."}
           </div>
         ) : (
           <div style={{ maxHeight, overflowY: "auto", paddingRight: 4 }}>

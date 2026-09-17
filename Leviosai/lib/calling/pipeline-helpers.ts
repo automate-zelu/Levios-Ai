@@ -8,8 +8,17 @@ export const PIPELINE_LATENCY_WARN_MS = 1500;
 /** Hard cap waiting on LLM response before aborting the turn. */
 export const LLM_RESPONSE_TIMEOUT_MS = 12_000;
 
-/** Hard cap waiting on ElevenLabs first-byte / stream completion. */
-export const TTS_TIMEOUT_MS = 8_000;
+/** Hard cap waiting on ElevenLabs synthesis completion. */
+export const TTS_TIMEOUT_MS = 12_000;
+
+/** μ-law @ 8kHz frame size Twilio expects (~20ms). */
+export const TWILIO_MULAW_FRAME_BYTES = 160;
+
+/** Pace outbound media frames to Twilio (ms). */
+export const TWILIO_MEDIA_FRAME_MS = 20;
+
+/** Re-prompt if the lead never speaks after the greeting. */
+export const GREETING_SILENCE_REPROMPT_MS = 8_000;
 
 /** Max Deepgram auto-reconnect attempts after unexpected close mid-call. */
 export const DEEPGRAM_MAX_RECONNECTS = 2;
