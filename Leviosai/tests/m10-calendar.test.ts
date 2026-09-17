@@ -17,6 +17,9 @@ import {
   shouldCreateAppointmentFromOutcome,
   canSelectActiveProvider,
   publicConnectionStatus,
+  isScheduledAtInFuture,
+  assertScheduledAtNotInPast,
+  filterFutureSlots,
   DEFAULT_APPOINTMENT_DURATION_MINUTES,
   ACTIVE_CALENDAR_SETTING_KEY,
 } from "../lib/calendar/booking-helpers.js";
@@ -92,6 +95,37 @@ describe("M10 schedule helpers", () => {
     const d = parseScheduledAt("2026-08-01T15:00:00.000Z");
     assert.ok(d instanceof Date);
     assert.equal(d!.toISOString(), "2026-08-01T15:00:00.000Z");
+  });
+
+  it("rejects past scheduledAt and keeps future times", () => {
+    const now = new Date("2026-09-17T12:00:00.000Z");
+    assert.equal(isScheduledAtInFuture(new Date("2026-09-17T11:00:00.000Z"), now), false);
+    assert.equal(isScheduledAtInFuture(new Date("2023-09-17T04:00:00.000Z"), now), false);
+    assert.equal(isScheduledAtInFuture(new Date("2026-09-17T12:00:30.000Z"), now), true);
+    assert.equal(isScheduledAtInFuture(new Date("2026-09-18T09:00:00.000Z"), now), true);
+    // Grace window: 30s in the past still OK
+    assert.equal(isScheduledAtInFuture(new Date("2026-09-17T11:59:45.000Z"), now), true);
+
+    assert.throws(
+      () => assertScheduledAtNotInPast(new Date("2023-09-17T04:00:00.000Z"), now),
+      /future/
+    );
+    assert.doesNotThrow(() =>
+      assertScheduledAtNotInPast(new Date("2026-09-18T15:00:00.000Z"), now)
+    );
+  });
+
+  it("filters past open slots from availability lists", () => {
+    const now = new Date("2026-09-17T12:00:00.000Z");
+    const filtered = filterFutureSlots(
+      [
+        { start: "2023-09-17T04:00:00.000Z", end: "2023-09-17T04:30:00.000Z" },
+        { start: "2026-09-17T13:00:00.000Z", end: "2026-09-17T13:30:00.000Z" },
+      ],
+      now
+    );
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].start, "2026-09-17T13:00:00.000Z");
   });
 
   it("computes end time with default duration", () => {

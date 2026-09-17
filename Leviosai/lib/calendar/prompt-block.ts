@@ -28,9 +28,10 @@ You have live tools: check_availability and book_appointment.
 When the lead wants to schedule a meeting:
 1. Call check_availability (it already uses your configured window: next ${prefs.daysAhead} days, ${prefs.durationMinutes}-minute meetings, business hours ${prefs.dayStartHour}:00–${prefs.dayEndHour}:00 ${tz}).
 2. Offer up to ${prefs.offerCount} real open slots in plain language (never invent availability).
-3. Call book_appointment only after they clearly confirm one slot.
+3. Call book_appointment only after they clearly confirm one slot — pass scheduledAt as the exact ISO string from slots[].start (never invent a year or past date).
 4. Confirm the booking verbally once the tool succeeds.
 Do not ask the lead to invent times first — check the calendar tool first, then offer slots.
+The backend rejects any booking time in the past; only current/future slots are valid.
 Timezone: ${tz}
 Active calendar: ${provider}${email}
 Meeting length: ${prefs.durationMinutes} minutes

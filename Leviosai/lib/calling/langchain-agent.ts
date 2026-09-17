@@ -187,7 +187,11 @@ export class LangChainCallAgent {
         description:
           "Book an appointment on the connected calendar after the lead confirms a specific slot. Pass ISO-8601 start time from check_availability.",
         schema: z.object({
-          scheduledAt: z.string().describe("ISO-8601 datetime for the appointment start"),
+          scheduledAt: z
+            .string()
+            .describe(
+              "ISO-8601 start datetime copied exactly from check_availability.slots[].start. Never invent dates. Must be now or in the future."
+            ),
           title: z.string().optional(),
           durationMinutes: z.number().int().min(15).max(120).optional(),
         }),
@@ -205,6 +209,15 @@ export class LangChainCallAgent {
               ok: false,
               error: "Invalid scheduledAt datetime",
               hint: "Ask the lead to confirm one of the offered slots again.",
+            });
+          }
+          if (when.getTime() < Date.now() - 60_000) {
+            return JSON.stringify({
+              ok: false,
+              error: "Cannot book a time in the past",
+              scheduledAt: when.toISOString(),
+              hint:
+                "Call check_availability again and book using an exact slots[].start ISO string from that result. Never invent years or past dates.",
             });
           }
           if (self.midCallBooking) {

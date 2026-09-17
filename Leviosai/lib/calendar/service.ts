@@ -12,6 +12,8 @@ import {
   defaultAppointmentTitle,
   publicConnectionStatus,
   resolveActiveProvider,
+  assertScheduledAtNotInPast,
+  filterFutureSlots,
   type CalendarBookingPrefs,
 } from "./booking-helpers.js";
 import {
@@ -221,11 +223,14 @@ export function workingHoursFallbackSlots(
     dayStartHour: prefs.dayStartHour,
     dayEndHour: prefs.dayEndHour,
   });
-  return open.map((s) => ({
-    start: s.start.toISOString(),
-    end: s.end.toISOString(),
-    label: formatSlotLabel(s.start, s.end, timezone),
-  }));
+  return filterFutureSlots(
+    open.map((s) => ({
+      start: s.start.toISOString(),
+      end: s.end.toISOString(),
+      label: formatSlotLabel(s.start, s.end, timezone),
+    })),
+    now
+  );
 }
 
 /** Make Google Cloud “API not enabled” errors actionable for agents + UI. */
@@ -266,24 +271,41 @@ export async function getCalendarAvailability(
     };
   }
 
-  const tokens = await getValidAccessToken(query.organizationId, provider);
-  if (!tokens) {
-    return {
-      provider,
-      timezone,
-      slots: [],
-      connected: false,
-      error: `${provider} calendar is not connected`,
-    };
-  }
-
   const daysAhead = Math.min(21, Math.max(1, query.daysAhead ?? prefs.daysAhead));
   const durationMinutes = query.durationMinutes ?? prefs.durationMinutes;
   const timeMin = query.timeMin || new Date(Date.now() + 60 * 60_000);
   const timeMax =
     query.timeMax || new Date(timeMin.getTime() + daysAhead * 24 * 60 * 60_000);
 
+  // Mock mode: exercise agent booking decisions without live Google/Outlook.
+  if (process.env.AGENT_CALENDAR_MOCK === "1") {
+    const mockSlots = workingHoursFallbackSlots({
+      ...prefs,
+      durationMinutes,
+      daysAhead,
+      maxSlots: query.maxSlots ?? prefs.maxSlots,
+    });
+    return {
+      provider,
+      timezone,
+      connected: true,
+      slots: mockSlots,
+      prefs,
+    };
+  }
+
   try {
+    const tokens = await getValidAccessToken(query.organizationId, provider);
+    if (!tokens) {
+      return {
+        provider,
+        timezone,
+        slots: [],
+        connected: false,
+        error: `${provider} calendar is not connected`,
+      };
+    }
+
     const busy = await queryProviderFreeBusy(
       provider,
       tokens.accessToken,
@@ -306,11 +328,13 @@ export async function getCalendarAvailability(
       provider,
       timezone,
       connected: true,
-      slots: open.map((s) => ({
-        start: s.start.toISOString(),
-        end: s.end.toISOString(),
-        label: formatSlotLabel(s.start, s.end, timezone),
-      })),
+      slots: filterFutureSlots(
+        open.map((s) => ({
+          start: s.start.toISOString(),
+          end: s.end.toISOString(),
+          label: formatSlotLabel(s.start, s.end, timezone),
+        }))
+      ),
       prefs,
     };
   } catch (err: any) {
@@ -330,6 +354,9 @@ export async function getCalendarAvailability(
 export async function bookAppointmentWithCalendar(
   input: BookAppointmentInput
 ): Promise<BookAppointmentResult> {
+  // Hard rule: never persist or sync appointments in the past (LLM year slips, etc.)
+  assertScheduledAtNotInPast(input.scheduledAt);
+
   const { ensureAppointmentCalendarColumns } = await import("./schema-ensure.js");
   await ensureAppointmentCalendarColumns();
 
@@ -391,6 +418,15 @@ export async function bookAppointmentWithCalendar(
 
   const status = await getCalendarStatus(input.organizationId);
   const provider = status.activeProvider;
+
+  if (process.env.AGENT_CALENDAR_MOCK === "1") {
+    return {
+      appointmentId: appt.id,
+      calendarEventId: `mock_evt_${appt.id}`,
+      calendarProvider: provider,
+      synced: true,
+    };
+  }
 
   if (!provider) {
     return {
@@ -537,6 +573,9 @@ export async function mutateAppointmentWithCalendar(
 
   if (input.action === "reschedule" && !input.scheduledAt) {
     throw Object.assign(new Error("scheduledAt is required to reschedule"), { status: 400 });
+  }
+  if (input.action === "reschedule" && input.scheduledAt) {
+    assertScheduledAtNotInPast(input.scheduledAt);
   }
 
   const plan = planBookingMutation(input.action);

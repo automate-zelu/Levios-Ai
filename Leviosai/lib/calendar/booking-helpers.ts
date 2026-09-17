@@ -79,6 +79,49 @@ export function parseScheduledAt(value: unknown): Date | null {
   return null;
 }
 
+/**
+ * Hard backend rule: bookings may only start at "now" or in the future.
+ * Small grace window absorbs clock skew between agent and server.
+ */
+export const SCHEDULED_AT_PAST_GRACE_MS = 60_000;
+
+export function isScheduledAtInFuture(
+  scheduledAt: Date,
+  now: Date = new Date(),
+  graceMs: number = SCHEDULED_AT_PAST_GRACE_MS
+): boolean {
+  if (!(scheduledAt instanceof Date) || Number.isNaN(scheduledAt.getTime())) return false;
+  return scheduledAt.getTime() >= now.getTime() - Math.max(0, graceMs);
+}
+
+/** Throws a 400-style error when scheduledAt is in the past. */
+export function assertScheduledAtNotInPast(
+  scheduledAt: Date,
+  now: Date = new Date(),
+  graceMs: number = SCHEDULED_AT_PAST_GRACE_MS
+): void {
+  if (isScheduledAtInFuture(scheduledAt, now, graceMs)) return;
+  const err = new Error(
+    `Appointment time must be now or in the future (got ${scheduledAt.toISOString()}). ` +
+      "Use an exact ISO start from check_availability — never invent past dates."
+  );
+  (err as any).status = 400;
+  (err as any).code = "SCHEDULED_AT_IN_PAST";
+  throw err;
+}
+
+/** Drop any open slots whose start is already in the past. */
+export function filterFutureSlots<T extends { start: string | Date }>(
+  slots: T[],
+  now: Date = new Date(),
+  graceMs: number = SCHEDULED_AT_PAST_GRACE_MS
+): T[] {
+  return slots.filter((s) => {
+    const start = s.start instanceof Date ? s.start : new Date(s.start);
+    return isScheduledAtInFuture(start, now, graceMs);
+  });
+}
+
 export function appointmentEndAt(start: Date, durationMinutes = DEFAULT_APPOINTMENT_DURATION_MINUTES): Date {
   const mins = Number.isFinite(durationMinutes) && durationMinutes > 0
     ? durationMinutes
