@@ -79,10 +79,11 @@ router.post("/api/call/connect/:sessionId", validateTwilioCallSession, async (re
   const twiml = new VoiceResponse();
   const connect = twiml.connect();
 
-  // both_tracks: receive lead audio; we still send AI audio on the same bidirectional socket
+  // Connect/Stream is bidirectional for sending audio back; track must be inbound_track only
+  // (Twilio 31941 if both_tracks is used with <Connect>).
   connect.stream({
     url:   `wss://${new URL(baseUrl).hostname}/api/call/stream/${sessionId}`,
-    track: "both_tracks",
+    track: "inbound_track",
   });
 
   res.type("text/xml").send(twiml.toString());
