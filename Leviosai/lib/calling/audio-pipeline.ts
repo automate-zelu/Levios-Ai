@@ -76,6 +76,8 @@ export class AudioPipeline {
   private leadTurnTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceRepromptTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsModel: string | null = null;
+  /** Set when this socket should not finalize the CRM session on close (Say redirect / refuse). */
+  private suppressEndOnClose = false;
 
   async handleStream(ws: WebSocket, sessionId: string): Promise<void> {
     const pendingMessages: any[] = [];
@@ -99,10 +101,10 @@ export class AudioPipeline {
       this.clearSilenceReprompt();
       // Twilio <Say> fallback redirects the call → WS closes intentionally.
       // Another stream may already be open, or reconnect is still pending.
-      if (remaining > 0 || isSayFallbackRedirect(sessionId)) {
+      if (this.suppressEndOnClose || remaining > 0 || isSayFallbackRedirect(sessionId)) {
         console.log(
           `📞 Stream closed without finalizing session ${sessionId} ` +
-          `(remainingStreams=${remaining}, sayFallback=${isSayFallbackRedirect(sessionId)})`
+          `(suppress=${this.suppressEndOnClose}, remainingStreams=${remaining}, sayFallback=${isSayFallbackRedirect(sessionId)})`
         );
         if (this.leadTurnTimer) {
           clearTimeout(this.leadTurnTimer);
@@ -134,6 +136,7 @@ export class AudioPipeline {
 
     if (session.status === "completed" || session.endedAt) {
       console.log(`📞 Refusing stream — session ${sessionId} already completed`);
+      this.suppressEndOnClose = true;
       trackStreamClose(sessionId);
       ws.close(1000, "session already completed");
       return;
@@ -256,15 +259,18 @@ export class AudioPipeline {
             console.log(`🤖 Greeting: "${greeting.substring(0, 100)}"`);
             this.appendLive(sessionId, "ai", greeting);
 
-            // Guaranteed audible opening via Twilio <Say> (Media Stream TTS can be silent on some legs).
-            // Stream reconnects afterward; resume path skips re-greeting and arms silence re-prompt.
+            // Speak on the live media stream (do NOT Twilio <Say>-redirect for the greeting —
+            // redirect closes the socket and a buffered "stop" was finalizing the call).
             this.isSpeaking = true;
+            this.deepgram.muteInput();
             try {
-              await this.fallbackToTwilioSay(sessionId, greeting, "greeting_via_twilio_say");
+              await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
             } finally {
+              this.deepgram.unmuteInput();
               this.isSpeaking = false;
               this.abortTTS = null;
             }
+            this.scheduleSilenceReprompt(ws, sessionId, config.assistantVoiceId);
           } catch (err: any) {
             console.error(`Greeting failed for session ${sessionId}:`, err.message);
             this.isSpeaking = false;
@@ -282,6 +288,13 @@ export class AudioPipeline {
           break;
 
         case "stop":
+          // During Twilio <Say> redirect the old stream emits "stop" — do not finalize.
+          if (this.suppressEndOnClose || isSayFallbackRedirect(sessionId)) {
+            console.log(
+              `📞 Ignoring stream stop during Say redirect/suppress for session ${sessionId}`
+            );
+            break;
+          }
           await this.endCall(sessionId, ws);
           break;
       }
