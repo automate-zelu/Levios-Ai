@@ -33,7 +33,12 @@ function log(label: string, detail?: unknown) {
 }
 
 async function main() {
-  console.log("\nAgent booking conversation (text only, no phone call)\n");
+  console.log("\nAgent booking conversation (text only, no phone call)");
+  if (process.env.AGENT_CALENDAR_MOCK === "1") {
+    console.log("MODE: AGENT_CALENDAR_MOCK=1 (fake open slots, no live Google API)\n");
+  } else {
+    console.log("MODE: live calendar\n");
+  }
   await ensureCommercialPricingSchema();
 
   const [conn] = await db.select().from(calendarConnections).limit(1);
@@ -226,7 +231,9 @@ Keep replies to 1-2 spoken sentences. Be helpful and close the meeting.`;
   console.log("");
 }
 
-main().catch((err) => {
+main()
+  .then(() => process.exit(process.exitCode ?? 0))
+  .catch((err) => {
   console.error(err);
   process.exit(1);
 });
