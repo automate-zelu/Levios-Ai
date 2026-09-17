@@ -116,13 +116,26 @@ router.post("/api/leads", requireAuth, async (req, res) => {
 
 router.patch("/api/leads/:id", requireAuth, async (req, res) => {
   try {
-    const lead = await storage.updateLead(parseInt(req.params.id), req.body, req.organizationId);
+    const allowed = [
+      "firstName", "lastName", "email", "phone", "source", "status",
+      "aiScore", "aiTemperature", "aiObjection", "reactorState",
+      "consentStatus", "dncClean", "timezone", "sentimentScore",
+      "outreachAttempts", "nextOutreachAt", "lastAgentId", "customFields",
+      "lastContactedAt",
+    ] as const;
+    const patch: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key)) {
+        patch[key] = req.body[key];
+      }
+    }
+    const lead = await storage.updateLead(parseInt(req.params.id), patch as any, req.organizationId);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     await storage.logActivity({
       entityType: "lead",
       entityId: lead.id,
       action: "updated",
-      details: `Lead updated: ${JSON.stringify(req.body)}`,
+      details: `Lead updated: ${JSON.stringify(patch)}`,
       organizationId: req.organizationId,
     });
     res.json(lead);

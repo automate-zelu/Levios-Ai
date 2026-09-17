@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import { COLORS, S } from "../theme.js";
 import { leadsApi, messagingApi } from "../api.js";
 import { LeadSequencesPanel } from "../components/sdr/LeadSequencesPanel.jsx";
+import LeadEditDrawer, { parseLeadNotes } from "../components/leads/LeadEditDrawer.jsx";
 import { parseEmailContent } from "../lib/emailMessage.js";
 
 const NAV = [
@@ -44,6 +45,7 @@ export default function LeadDetailPage({ onNavigate }) {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [busy, setBusy] = useState("");
   const [chatChannel, setChatChannel] = useState(null); // null | "sms" | "email"
+  const [editOpen, setEditOpen] = useState(false);
 
   const rawTab = searchParams.get("tab") || "overview";
   const tab = rawTab === "sequences" ? "sequences" : "overview";
@@ -75,6 +77,7 @@ export default function LeadDetailPage({ onNavigate }) {
           name: `${l.firstName || ""} ${l.lastName || ""}`.trim() || `Lead #${l.id}`,
           statusLabel: STATUS_LABEL[l.status] || l.status,
           score: l.aiScore || 0,
+          notes: parseLeadNotes(l),
         });
         setMessages(msgs || []);
       })
@@ -201,6 +204,9 @@ export default function LeadDetailPage({ onNavigate }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" style={S.btn("secondary")} onClick={() => setEditOpen(true)}>
+              ✏️ Edit
+            </button>
             <button type="button" style={S.btn("primary")} disabled={busy === "call"} onClick={startCall}>
               {busy === "call" ? "Calling…" : "📞 Call"}
             </button>
@@ -224,6 +230,7 @@ export default function LeadDetailPage({ onNavigate }) {
               emailCount={emailCount}
               onOpenChat={(channel) => setChatChannel(channel)}
               onOpenSequences={() => setTab("sequences")}
+              onEdit={() => setEditOpen(true)}
             />
           )}
 
@@ -240,6 +247,14 @@ export default function LeadDetailPage({ onNavigate }) {
           messages={sortedMessages.filter((m) => m.channel === chatChannel)}
           onClose={() => setChatChannel(null)}
           onOpenInbox={openInbox}
+        />
+      )}
+
+      {editOpen && (
+        <LeadEditDrawer
+          lead={lead}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => load()}
         />
       )}
     </div>
@@ -328,7 +343,7 @@ function ChannelPreview({ channel, messages, onOpen }) {
   );
 }
 
-function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences }) {
+function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences, onEdit }) {
   const smsMessages = useMemo(() => messages.filter((m) => m.channel === "sms"), [messages]);
   const emailMessages = useMemo(() => messages.filter((m) => m.channel === "email"), [messages]);
 
@@ -341,6 +356,11 @@ function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpe
 
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <button type="button" style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12 }} onClick={onEdit}>
+          ✏️ Edit properties
+        </button>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
         <InfoCard label="Phone" value={lead.phone || "—"} />
         <InfoCard label="Email" value={lead.email || "—"} />

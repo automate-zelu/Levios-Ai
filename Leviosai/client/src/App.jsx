@@ -19,6 +19,7 @@ import BookingsPage from "./pages/BookingsPage.jsx";
 import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
+import LeadEditDrawer from "./components/leads/LeadEditDrawer.jsx";
 
 // ============================================================
 // CATALYST — Agentic AI Sales & Lead Revival Platform
@@ -1468,93 +1469,7 @@ function ScoreResultModal({ lead, onClose }) {
 
 // Edit Lead modal — mirrors Add Lead fields but PATCHes existing lead.
 function EditLeadModal({ lead, onClose, onSaved }) {
-  const [form, setForm] = useState({
-    firstName: lead.firstName || "",
-    lastName: lead.lastName || "",
-    email: lead.email || "",
-    phone: lead.phone || "",
-    source: lead.source || "",
-    status: lead.rawStatus || lead.status || "new",
-    notes: lead.notes || "",
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const save = async () => {
-    setError("");
-    if (!form.firstName.trim() || !form.lastName.trim() || !form.email.trim()) {
-      setError("First name, last name, and email are required."); return;
-    }
-    setSaving(true);
-    try {
-      await leadsApi.update(lead.id, form);
-      onSaved && onSaved();
-      onClose();
-    } catch (e) {
-      setError(e.message || "Failed to save.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <LeadActionShell icon="✏️" title="Edit Lead" subtitle="Update contact info and status" lead={lead} onClose={onClose} width={600}>
-      {error && <div style={{ padding: "10px 12px", borderRadius: 8, background: `${COLORS.red}22`, color: COLORS.red, fontSize: 12, marginBottom: 14 }}>{error}</div>}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <div>
-          <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>First Name *</label>
-          <input style={S.input} value={form.firstName} onChange={(e) => setForm(f => ({ ...f, firstName: e.target.value }))} />
-        </div>
-        <div>
-          <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Last Name *</label>
-          <input style={S.input} value={form.lastName} onChange={(e) => setForm(f => ({ ...f, lastName: e.target.value }))} />
-        </div>
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Email *</label>
-        <input style={S.input} type="email" value={form.email} onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))} />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-        <div>
-          <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Phone</label>
-          <input style={S.input} value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))} />
-        </div>
-        <div>
-          <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Source</label>
-          <select style={{ ...S.select, width: "100%" }} value={form.source} onChange={(e) => setForm(f => ({ ...f, source: e.target.value }))}>
-            <option value="">—</option>
-            <option value="Manual Entry">Manual Entry</option>
-            <option value="Website">Website</option>
-            <option value="Referral">Referral</option>
-            <option value="Cold Call">Cold Call</option>
-            <option value="Facebook Ad">Facebook Ad</option>
-            <option value="Google Ad">Google Ad</option>
-            <option value="CSV Import">CSV Import</option>
-            <option value="Other">Other</option>
-          </select>
-        </div>
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Status</label>
-        <select style={{ ...S.select, width: "100%" }} value={form.status} onChange={(e) => setForm(f => ({ ...f, status: e.target.value }))}>
-          <option value="new">New</option>
-          <option value="contacted">Aged (contacted)</option>
-          <option value="qualified">Revived (qualified)</option>
-          <option value="proposal">Appointment Set (proposal)</option>
-          <option value="won">Won</option>
-          <option value="lost">Dead (lost)</option>
-        </select>
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 11, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Notes</label>
-        <textarea style={{ ...S.input, minHeight: 90, fontFamily: "inherit", padding: 12 }} value={form.notes} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} />
-      </div>
-      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-        <button onClick={save} disabled={saving} style={S.btn("primary")}>{saving ? "Saving…" : "Save Changes"}</button>
-      </div>
-    </LeadActionShell>
-  );
+  return <LeadEditDrawer lead={lead} onClose={onClose} onSaved={onSaved} />;
 }
 
 // ============================================================
@@ -1592,6 +1507,7 @@ function LeadsPage({ onNavigate }) {
       setLeads(data.map(l => ({
         ...l,
         name: `${l.firstName} ${l.lastName}`,
+        rawStatus: l.status,
         status: statusLabelMap[l.status] || l.status,
         score: l.aiScore || 0,
         baseScore: l.aiScore || 50,
