@@ -143,18 +143,38 @@ export function countWords(text: string): number {
   return text.trim() ? text.trim().split(/\s+/).length : 0;
 }
 
-export type PostCallOutcome = "booked" | "qualified" | "answered" | "no_answer" | "voicemail" | "failed";
+export type PostCallOutcome =
+  | "booked"
+  | "qualified"
+  | "answered"
+  | "no_answer"
+  | "no_response"
+  | "voicemail"
+  | "failed";
 
-/** Session outcome after hangup — greeting-only / voicemail is never "answered". */
+/**
+ * Session outcome after hangup.
+ * - Ring-out / never connected → no_answer
+ * - Media connected but lead never spoke → no_response (picked up, silent)
+ * - Lead spoke → analysed outcome (answered / booked / …)
+ */
 export function resolvePostCallOutcome(opts: {
   transcript: string | null | undefined;
   analysedOutcome?: string | null;
   midCallBooking?: boolean;
+  /** True when Twilio media stream ran or the call had live connected time. */
+  callConnected?: boolean;
 }): PostCallOutcome {
   if (opts.midCallBooking) return "booked";
-  if (!transcriptHasLeadSpeech(opts.transcript)) return "no_answer";
+  if (!transcriptHasLeadSpeech(opts.transcript)) {
+    return opts.callConnected ? "no_response" : "no_answer";
+  }
   const o = (opts.analysedOutcome || "answered") as PostCallOutcome;
-  if (["booked", "qualified", "answered", "no_answer", "voicemail", "failed"].includes(o)) return o;
+  if (
+    ["booked", "qualified", "answered", "no_answer", "no_response", "voicemail", "failed"].includes(o)
+  ) {
+    return o;
+  }
   return "answered";
 }
 
@@ -166,6 +186,7 @@ export function resolveTwilioHangupAction(opts: {
   outcome?: string | null;
   transcript?: string | null;
   callAttempts?: number;
+  callConnected?: boolean;
 }): "sms_miss" | "sms_failed" | "busy_retry" | "sms_busy_max" | "booked" | "answered_exhausted" | "noop" {
   const status = (opts.callStatus || "").toLowerCase();
   if (status === "no-answer") return "sms_miss";
@@ -174,12 +195,17 @@ export function resolveTwilioHangupAction(opts: {
     return (opts.callAttempts ?? 1) < 3 ? "busy_retry" : "sms_busy_max";
   }
   if (status === "completed") {
+    const connected =
+      opts.callConnected ??
+      (Boolean(opts.transcript?.trim()) || (opts.outcome !== "no_answer" && opts.outcome != null));
     const outcome = resolvePostCallOutcome({
       transcript: opts.transcript,
       analysedOutcome: opts.outcome,
+      callConnected: connected,
     });
     if (outcome === "booked") return "booked";
     if (outcome === "qualified" || outcome === "answered") return "answered_exhausted";
+    // no_answer / no_response / voicemail → continue sequence with SMS
     return "sms_miss";
   }
   return "noop";

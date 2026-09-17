@@ -2,7 +2,18 @@ import { COLORS, S, formatDuration } from "../../theme.js";
 
 const OUTCOME_COLORS = {
   booked: COLORS.green, qualified: COLORS.teal, answered: COLORS.blue,
-  no_answer: COLORS.textMuted, voicemail: COLORS.yellow, busy: COLORS.orange, failed: COLORS.red,
+  no_response: COLORS.yellow, no_answer: COLORS.textMuted, voicemail: COLORS.yellow,
+  busy: COLORS.orange, failed: COLORS.red,
+};
+const OUTCOME_LABELS = {
+  booked: "Booking made",
+  qualified: "Qualified",
+  answered: "Answered",
+  no_response: "Picked up · no reply",
+  no_answer: "No answer",
+  voicemail: "Voicemail",
+  busy: "Busy",
+  failed: "Failed",
 };
 const STATUS_COLORS = { initiated: COLORS.yellow, active: COLORS.green, completed: COLORS.textMuted };
 const STATUS_LABELS = { initiated: "Dialing…", active: "Live", completed: "Completed" };
@@ -49,7 +60,7 @@ export function CallLogTable({ sessions, onSelect }) {
               <td style={S.td}>
                 {s.outcome
                   ? <span style={S.badge(OUTCOME_COLORS[s.outcome] || COLORS.textMuted)}>
-                      {String(s.outcome).replace(/_/g, " ")}
+                      {OUTCOME_LABELS[s.outcome] || String(s.outcome).replace(/_/g, " ")}
                     </span>
                   : <span style={{ color: COLORS.textMuted, fontSize: 12 }}>—</span>}
               </td>

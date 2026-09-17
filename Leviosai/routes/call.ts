@@ -285,10 +285,14 @@ router.post("/api/call/status/:sessionId", validateTwilioCallSession, async (req
           }
           await stateMachine.transition(enrollment.id, "exhausted", { outcome });
         } else {
-          // Missed, voicemail, or greeting-only — continue sequence via SMS
+          // Missed, silent pickup, voicemail, or greeting-only — continue sequence via SMS
           if (stateMachine.canTransition(st as any, "call_no_answer")) {
             await stateMachine.transition(enrollment.id, "call_no_answer", {
-              outcome: leadSpoke ? (outcome ?? "no_answer") : "no_answer",
+              outcome: leadSpoke
+                ? (outcome ?? "no_answer")
+                : (session.twilioStreamSid || (callDuration || 0) >= 5
+                    ? "no_response"
+                    : "no_answer"),
             });
             const jobId = await enqueueJob("SEND_SMS", enrollment.id, waitSmsMs);
             await storeEnrollmentJobId(enrollment.id, jobId);

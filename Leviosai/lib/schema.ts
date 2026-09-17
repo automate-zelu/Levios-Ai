@@ -573,7 +573,8 @@ export const sdrCallSessions = pgTable("sdr_call_sessions", {
   transcript:      text("transcript"),
   aiSummary:       text("ai_summary"),
   outcome:         text("outcome"),
-  // booked | qualified | answered | no_answer | voicemail | busy | failed
+  // booked | qualified | answered | no_answer | no_response | voicemail | busy | failed
+  // no_answer = never connected; no_response = picked up but lead never spoke
   /** ISO slot extracted when outcome=booked (Module 10) */
   bookedScheduledAt: timestamp("booked_scheduled_at"),
   startedAt:       timestamp("started_at"),

@@ -65,10 +65,19 @@ describe("Voice hangup pipeline (no live call)", () => {
       "no_answer"
     );
     assert.equal(
+      resolvePostCallOutcome({
+        transcript: greetingOnly,
+        analysedOutcome: "answered",
+        callConnected: true,
+      }),
+      "no_response"
+    );
+    assert.equal(
       resolveTwilioHangupAction({
         callStatus: "completed",
         outcome: "answered",
         transcript: greetingOnly,
+        callConnected: true,
       }),
       "sms_miss"
     );

@@ -40,6 +40,7 @@ import {
   mergeUtteranceFragments,
   countWords,
   transcriptHasLeadSpeech,
+  resolvePostCallOutcome,
 } from "./pipeline-helpers.js";
 import {
   clearSayFallbackRedirect,
@@ -646,13 +647,23 @@ export class AudioPipeline {
       }
 
       const leadSpoke = transcriptHasLeadSpeech(fullTranscript);
-      const resolvedOutcome = mid ? "booked" : leadSpoke ? outcome : "no_answer";
+      const callConnected = Boolean(this.streamSid) || this.transcript.lineCount > 0;
+      const resolvedOutcome = resolvePostCallOutcome({
+        transcript: fullTranscript,
+        analysedOutcome: outcome,
+        midCallBooking: Boolean(mid),
+        callConnected,
+      });
 
       await db
         .update(sdrCallSessions)
         .set({
           transcript: fullTranscript,
-          aiSummary: leadSpoke ? summary : "No lead speech captured (missed / voicemail).",
+          aiSummary: leadSpoke
+            ? summary
+            : callConnected
+              ? "Call was answered but no lead speech was captured."
+              : "No lead speech captured (missed / voicemail).",
           outcome: resolvedOutcome,
           bookedScheduledAt: resolvedOutcome === "booked" ? bookedScheduledAt : null,
           status: "completed",

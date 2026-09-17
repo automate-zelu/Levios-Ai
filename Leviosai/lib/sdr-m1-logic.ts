@@ -49,7 +49,8 @@ export function billableCallSeconds(
     outcome === "answered" ||
     outcome === "qualified" ||
     outcome === "booked" ||
-    outcome === "voicemail";
+    outcome === "voicemail" ||
+    outcome === "no_response";
 
   // Twilio sometimes reports CallStatus=completed with a 1–2s duration for
   // carrier blips / immediate hangups with no conversation outcome.

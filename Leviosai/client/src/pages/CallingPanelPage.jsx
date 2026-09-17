@@ -9,6 +9,7 @@ const OUTCOME_META = {
   booked: { label: "Booking made", color: COLORS.green, tone: "success", short: "Booked" },
   qualified: { label: "Qualified", color: COLORS.teal, tone: "positive", short: "Qualified" },
   answered: { label: "Answered", color: COLORS.blue, tone: "positive", short: "Answered" },
+  no_response: { label: "Picked up · no reply", color: COLORS.yellow, tone: "missed", short: "Silent" },
   voicemail: { label: "Voicemail", color: COLORS.yellow, tone: "neutral", short: "Voicemail" },
   no_answer: { label: "No answer", color: COLORS.textMuted, tone: "missed", short: "Missed" },
   busy: { label: "Busy", color: COLORS.orange, tone: "missed", short: "Busy" },
@@ -105,7 +106,7 @@ export default function CallingPanelPage() {
       if (filter === "all") return true;
       if (filter === "booked") return s.outcome === "booked";
       if (filter === "answered") return ["answered", "qualified", "booked"].includes(s.outcome);
-      if (filter === "missed") return ["no_answer", "busy", "voicemail"].includes(s.outcome);
+      if (filter === "missed") return ["no_answer", "no_response", "busy", "voicemail"].includes(s.outcome);
       if (filter === "failed") return s.outcome === "failed" || (!s.outcome && s.status === "completed");
       return true;
     });
