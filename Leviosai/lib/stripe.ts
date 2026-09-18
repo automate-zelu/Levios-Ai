@@ -8,8 +8,6 @@ import {
   resetWorkspaceUsage,
 } from "./sdr-admin.js";
 import { planKeyToSdrTier, TIER_LIMITS, type SdrTier } from "./tiers.js";
-import { provisionWorkspace } from "./twilio-subaccount.js";
-import { notifyTwilioProvisionFailed } from "./ops-alerts.js";
 import {
   PLAN_PRICING,
   resolveStripePriceId,
@@ -41,21 +39,12 @@ async function activateWorkspaceForOrg(orgId: number, plan: string): Promise<voi
     return;
   }
 
-  // Auto-provision Twilio sub-account on paid activation (plan §16.8).
-  // Non-fatal — admin can provision manually; ops gets an email on failure.
+  // Twilio is BYOT only — users connect their own account in SDR Setup.
+  // Do not auto-provision platform/master Twilio sub-accounts on subscribe.
   if (isActive && !ws.twilioSubAccountSid) {
-    try {
-      await provisionWorkspace(ws.id, ws.name);
-      console.log(`✅ Twilio provisioned for workspace ${ws.id}`);
-    } catch (err: any) {
-      console.error(`⚠️ Twilio provisioning failed for ${ws.id}:`, err.message);
-      await notifyTwilioProvisionFailed({
-        workspaceId: ws.id,
-        workspaceName: ws.name,
-        organizationId: orgId,
-        errorMessage: err?.message || String(err),
-      });
-    }
+    console.log(
+      `ℹ️  Workspace ${ws.id} activated without Twilio — user must connect BYOT in SDR Setup`
+    );
   }
 }
 

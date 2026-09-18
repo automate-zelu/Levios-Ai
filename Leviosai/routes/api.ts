@@ -479,10 +479,8 @@ router.get("/api/health", async (_req, res) => {
     services.redis = "error";
   }
 
-  // ── Twilio ──
-  services.twilio = (
-    process.env.TWILIO_MASTER_SID || process.env.TWILIO_ACCOUNT_SID
-  ) ? "ok" : "unconfigured";
+  // ── Twilio (BYOT — per workspace; platform does not use env Twilio) ──
+  services.twilio = "byot";
 
   // ── AI services ──
   services.deepgram   = process.env.DEEPGRAM_API_KEY   ? "ok" : "unconfigured";

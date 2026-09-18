@@ -1,20 +1,11 @@
 // ─── TWILIO SUB-ACCOUNT MANAGER ───────────────────────────────────────────────
-// Creates, configures, and releases Twilio sub-accounts per workspace.
+// Optional admin helpers for platform-managed sub-accounts.
 //
-// Each workspace (client) gets an isolated Twilio sub-account so that:
-//   - Spam/compliance issues on one client cannot affect others
-//   - Per-client Twilio spend is trackable and markable up
-//   - Calls and SMS appear from the client's own provisioned number
-//   - Clients never need to touch Twilio directly
+// Production calling/SMS is BYOT only: each workspace connects its own Twilio
+// account via routes/twilio-byot.ts. Outbound traffic never uses TWILIO_* env.
 //
-// Credentials are AES-256 encrypted before DB storage (lib/crypto.ts).
-// The master account credentials live only in env vars — never in the DB.
-//
-// Required env vars:
-//   TWILIO_MASTER_SID          — Leviosai's master Twilio account SID
-//   TWILIO_MASTER_AUTH_TOKEN   — Leviosai's master Twilio auth token
-//   BASE_URL                   — Public URL for Twilio webhook callbacks
-//   ENCRYPTION_KEY             — 64-char hex key for credential encryption
+// Master env vars (TWILIO_MASTER_*) are optional and only needed if an admin
+// uses the legacy provision/release APIs — not required for BYOT.
 
 import twilio from "twilio";
 import { db } from "./db.js";
@@ -156,28 +147,23 @@ export function getWorkspaceTwilioClient(workspace: {
   );
 }
 
-// ─── FALLBACK CLIENT ─────────────────────────────────────────────────────────
-// Returns workspace sub-account client if provisioned, otherwise falls back
-// to the master account. Used during migration / dev so calls still work
-// before sub-accounts are provisioned.
+// ─── WORKSPACE CLIENT (BYOT only) ────────────────────────────────────────────
+// Every workspace must connect its own Twilio account. Platform env TWILIO_*
+// credentials are never used for outbound calls/SMS.
 
 export function getClientForWorkspace(workspace: {
   twilioSubAccountSid: string | null;
   twilioSubAuthToken:  string | null;
+  twilioPhoneNumber?: string | null;
 }): { client: twilio.Twilio; fromNumber: string | null } {
-  if (workspace.twilioSubAccountSid && workspace.twilioSubAuthToken) {
-    return {
-      client:     getWorkspaceTwilioClient(workspace),
-      fromNumber: (workspace as any).twilioPhoneNumber ?? null,
-    };
+  if (!workspace.twilioSubAccountSid || !workspace.twilioSubAuthToken) {
+    throw new Error(
+      "Twilio not connected for this workspace — connect your own Twilio account in SDR Setup"
+    );
   }
-  // Fallback: master account (dev / pre-provisioning)
-  const sid   = process.env.TWILIO_MASTER_SID   || process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_MASTER_AUTH_TOKEN || process.env.TWILIO_AUTH_TOKEN;
-  if (!sid || !token) throw new Error("No Twilio credentials available for this workspace");
   return {
-    client:     twilio(sid, token),
-    fromNumber: process.env.TWILIO_PHONE_NUMBER ?? null,
+    client: getWorkspaceTwilioClient(workspace),
+    fromNumber: workspace.twilioPhoneNumber ?? null,
   };
 }
 

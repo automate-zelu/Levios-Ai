@@ -5,9 +5,9 @@
 // Requests without a valid signature return 403 — prevents spoofed webhooks.
 //
 // Multi-tenant BYOT handling:
-//   - SMS webhooks: look up workspace by the `To` phone number in the body
-//   - Call-session webhooks: caller passes `authToken` directly (resolved at route level)
-//   - Falls back to TWILIO_AUTH_TOKEN env var if workspace token not found
+//   - SMS / status webhooks: look up workspace by To/From phone → workspace auth token
+//   - Call-session webhooks: resolve token via session → workspace
+//   - No platform TWILIO_* env fallback (every workspace brings its own Twilio)
 //
 // Validation is skipped in development (localhost) because Twilio signs against
 // the public URL, which won't match a local URL.
@@ -58,9 +58,20 @@ async function resolveAuthTokenByPhone(toPhone: string): Promise<string | null> 
       return decrypt(ws.twilioSubAuthToken);
     }
   } catch {
-    // Decryption failure — fall back to env var token
+    // Decryption / lookup failure — no platform env fallback
   }
   return null;
+}
+
+/** Resolve BYOT auth token from outbound From or inbound To. */
+async function resolveAuthTokenByCallLegs(
+  fromPhone: string,
+  toPhone: string
+): Promise<string | null> {
+  return (
+    (await resolveAuthTokenByPhone(fromPhone)) ||
+    (await resolveAuthTokenByPhone(toPhone))
+  );
 }
 
 function uniqueNonEmpty(values: Array<string | null | undefined>): string[] {
@@ -142,15 +153,12 @@ export function twilioSignatureMiddleware(
 
     const urls = candidateWebhookUrls(req);
 
-    const tokens = uniqueNonEmpty([
-      resolver ? await resolver(req) : null,
-      process.env.TWILIO_AUTH_TOKEN,
-      process.env.TWILIO_MASTER_AUTH_TOKEN,
-    ]);
+    const tokens = uniqueNonEmpty([resolver ? await resolver(req) : null]);
 
     if (tokens.length === 0) {
-      console.warn("Twilio signature validation: no auth token available — skipping");
-      return next();
+      console.warn("Twilio signature validation: no workspace auth token — rejecting");
+      res.status(403).json({ error: "No workspace Twilio credentials for this webhook" });
+      return;
     }
 
     const body = req.body ?? {};
@@ -187,5 +195,7 @@ export const validateTwilioCallSession = twilioSignatureMiddleware(
   (req) => resolveAuthTokenBySession(req.params?.sessionId ?? "")
 );
 
-/** Generic validator using env var token only (for routes without workspace context). */
-export const validateTwilioGeneric = twilioSignatureMiddleware();
+/** Call-status / voice webhooks — resolve BYOT token from From or To. */
+export const validateTwilioGeneric = twilioSignatureMiddleware((req) =>
+  resolveAuthTokenByCallLegs(req.body?.From ?? "", req.body?.To ?? "")
+);

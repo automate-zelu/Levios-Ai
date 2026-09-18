@@ -364,11 +364,9 @@ router.post("/api/call/recording/:sessionId", validateTwilioCallSession, async (
       .from(sdrCallSessions)
       .where(eq(sdrCallSessions.id, sessionId));
 
-    // Resolve Twilio credentials for authenticated media download
-    let accountSid =
-      process.env.TWILIO_MASTER_SID || process.env.TWILIO_ACCOUNT_SID || "";
-    let authToken =
-      process.env.TWILIO_MASTER_AUTH_TOKEN || process.env.TWILIO_AUTH_TOKEN || "";
+    // Resolve workspace BYOT Twilio credentials for authenticated media download
+    let accountSid = "";
+    let authToken = "";
 
     if (session) {
       const [workspace] = await db
@@ -379,11 +377,15 @@ router.post("/api/call/recording/:sessionId", validateTwilioCallSession, async (
       if (workspace?.twilioSubAccountSid && workspace?.twilioSubAuthToken) {
         try {
           accountSid = decrypt(workspace.twilioSubAccountSid);
-          authToken  = decrypt(workspace.twilioSubAuthToken);
-        } catch {
-          // fall back to master env creds
+          authToken = decrypt(workspace.twilioSubAuthToken);
+        } catch (err: any) {
+          console.warn(`Recording webhook: failed to decrypt workspace Twilio creds: ${err.message}`);
         }
       }
+    }
+
+    if (!accountSid || !authToken) {
+      console.warn(`Recording webhook: no workspace BYOT Twilio creds for session ${sessionId}`);
     }
 
     let storedUrl = recordingUrl;
