@@ -133,7 +133,7 @@ jobs:
             echo "Missing LEVIOSAI_ENV secret"
             exit 1
           fi
-          PUBLIC_BASE_URL="${PROD_BASE_URL:-https://luckless-perplexed-spiffy.ngrok-free.dev}"
+          PUBLIC_BASE_URL="${PROD_BASE_URL:-https://leviosa.zeluai.ca}"
           printf '%s\n' "$LEVIOSAI_ENV" > /tmp/leviosai.env
 
           set_kv () {
@@ -149,6 +149,7 @@ jobs:
           set_kv NODE_ENV production
           set_kv REDIS_URL "redis://127.0.0.1:6379"
           set_kv BASE_URL "$PUBLIC_BASE_URL"
+          set_kv PUBLIC_DOMAIN "$PUBLIC_BASE_URL"
 
           rm -f /tmp/leviosai.env.bak
           grep -q '^DATABASE_URL=' /tmp/leviosai.env
@@ -184,7 +185,7 @@ jobs:
 
           mkdir -p "\$HOME/logs"
 
-          echo "=== Pre-deploy cleanup (leviosai only — keep ngrok running) ==="
+          echo "=== Pre-deploy cleanup (leviosai only) ==="
           free -h
           pm2 stop leviosai 2>/dev/null || true
           pkill -f "vite build" 2>/dev/null || true
@@ -219,12 +220,6 @@ jobs:
             PORT=3000 NODE_ENV=production pm2 start "npx tsx server.ts" --name leviosai --time
           fi
 
-          if ! pm2 describe ngrok >/dev/null 2>&1; then
-            echo "WARNING: ngrok PM2 process missing — Twilio HTTPS webhooks will fail."
-          else
-            pm2 restart ngrok --update-env || true
-          fi
-
           pm2 save
           pm2 list
 
@@ -242,15 +237,14 @@ jobs:
           echo "Leviosai deployment complete."
           EOF
 
-      - name: Verify public HTTPS (ngrok) health
+      - name: Verify public HTTPS health
         env:
           PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
         run: |
-          PUBLIC_BASE_URL="${PROD_BASE_URL:-https://luckless-perplexed-spiffy.ngrok-free.dev}"
+          PUBLIC_BASE_URL="${PROD_BASE_URL:-https://leviosa.zeluai.ca}"
           echo "Checking ${PUBLIC_BASE_URL}/api/health"
           for i in 1 2 3 4 5 6; do
             code=$(curl -sS -m 15 -o /tmp/prod_health.json -w "%{http_code}" \
-              -H "ngrok-skip-browser-warning: true" \
               "${PUBLIC_BASE_URL}/api/health" || echo "000")
             if [ "$code" = "200" ]; then
               head -c 200 /tmp/prod_health.json; echo

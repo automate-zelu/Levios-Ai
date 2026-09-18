@@ -4,7 +4,7 @@ import type WebSocket from "ws";
 import { LangChainCallAgent } from "./langchain-agent.js";
 import { DeepgramSTTClient } from "./deepgram-client.js";
 import { ElevenLabsClient } from "./elevenlabs-client.js";
-import { shortenGreeting } from "./audio-pipeline.js";
+import { shortenGreeting } from "./pipeline-helpers.js";
 import { recordWorkspaceLatency, type LatencySample } from "../agent-stack.js";
 import { consumeTestCallMinutes } from "../test-credits-apply.js";
 import { TEST_CALL_HARD_CAP_SECONDS, testCallClock } from "../test-credits.js";

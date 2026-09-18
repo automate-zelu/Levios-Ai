@@ -28,13 +28,40 @@ export const DEEPGRAM_RECONNECT_DELAY_MS = 500;
 
 /**
  * Silence gap (ms) after the lead's last final transcript fragment before we
- * treat the turn as complete and generate an AI reply. Prevents responding to
- * mid-sentence chunks like "could you" before "tell me more…".
+ * treat the turn as complete. Prefer turnHoldMs() from turn-gate.ts — these
+ * constants remain for tests / REST batch sizing.
  */
-export const LEAD_TURN_GAP_MS = 1400;
+export const LEAD_TURN_GAP_MS = 180;
+
+/** Extra wait when the last fragment looks unfinished. */
+export const LEAD_TURN_INCOMPLETE_GAP_MS = 700;
 
 /** Minimum words in a lead turn before we bother the LLM (skip filler/noise). */
 export const LEAD_TURN_MIN_WORDS = 1;
+
+/** Deepgram REST batch interval when WSS is unavailable. */
+export const DEEPGRAM_REST_FLUSH_MS = 900;
+
+/** @deprecated use REST_TURN_HOLD_MS via turn-gate */
+export const DEEPGRAM_REST_TURN_HOLD_MS = 1400;
+
+/** @deprecated use REST_SHORT_ANSWER_HOLD_MS via turn-gate */
+export const DEEPGRAM_REST_SHORT_ANSWER_HOLD_MS = 500;
+
+export {
+  looksLikeIncompleteUtterance,
+  looksLikeCompleteShortAnswer,
+  turnHoldMs,
+  normalizeUtterance,
+  type SttSource,
+} from "./turn-gate.js";
+
+import { turnHoldMs } from "./turn-gate.js";
+
+/** @deprecated prefer turnHoldMs(text, source) */
+export function leadTurnGapMs(text: string): number {
+  return turnHoldMs(text, "rest");
+}
 
 /**
  * Whether a REST-batch Deepgram transcript should be emitted to the call agent.
@@ -233,4 +260,18 @@ export function transcriptHasLeadSpeech(transcript: string | null | undefined): 
     }
   }
   return /(?:^|\n)LEAD\s*:/i.test(t);
+}
+
+/** Keep the first spoken greeting short even if the model over-talks. */
+export function shortenGreeting(text: string, maxWords = 18): string {
+  const cleaned = (text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return "Hi, this is Levios — is now a good time for a quick call?";
+  }
+  const sentence = cleaned.split(/(?<=[.!?])\s+/)[0]?.trim() || cleaned;
+  const words = sentence.split(/\s+/);
+  if (words.length <= maxWords) {
+    return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+  }
+  return `${words.slice(0, maxWords).join(" ").replace(/[,:;–—-]+$/, "")}.`;
 }

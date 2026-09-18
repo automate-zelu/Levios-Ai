@@ -658,16 +658,21 @@ router.get("/api/sdr/test-credits", async (req: Request, res: Response) => {
 router.get("/api/sdr/voice-stack", async (req: Request, res: Response) => {
   try {
     const { buildAgentStack } = await import("../lib/agent-stack.js");
+    const { useOpenAiRealtimeVoice } = await import("../lib/calling/openai-realtime-session.js");
     const { ensureTestCreditColumn } = await import("../lib/schema-ensure.js");
     await ensureTestCreditColumn();
     const workspaceId = req.workspace!.id;
     const [config] = await db.select().from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
+    const realtime = useOpenAiRealtimeVoice();
+
     let voices: Array<{ id: string; name: string }> = [];
-    try {
-      const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
-      voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
-    } catch {
-      voices = [];
+    if (!realtime) {
+      try {
+        const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
+        voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
+      } catch {
+        voices = [];
+      }
     }
     const voiceId = config?.assistantVoiceId || null;
     const voiceName = voices.find((v) => v.id === voiceId)?.name || null;
@@ -680,6 +685,9 @@ router.get("/api/sdr/voice-stack", async (req: Request, res: Response) => {
         voiceId,
         voiceName,
         voices,
+        realtime,
+        realtimeModel: (config as any)?.llmModel || process.env.OPENAI_REALTIME_MODEL,
+        realtimeVoice: voiceId || process.env.OPENAI_REALTIME_VOICE,
       })
     );
   } catch (err: any) {
@@ -694,40 +702,59 @@ router.patch("/api/sdr/voice-stack", async (req: Request, res: Response) => {
       resolveSttModel,
       resolveLlmModel,
       resolveTtsModel,
+      resolveRealtimeModel,
+      resolveRealtimeVoice,
       buildAgentStack,
     } = await import("../lib/agent-stack.js");
+    const { useOpenAiRealtimeVoice } = await import("../lib/calling/openai-realtime-session.js");
     await ensureTestCreditColumn();
     const workspaceId = req.workspace!.id;
-    const sttModel = resolveSttModel(req.body?.sttModel);
-    const llmModel = resolveLlmModel(req.body?.llmModel);
-    const ttsModel = resolveTtsModel(req.body?.ttsModel);
-    const assistantVoiceId =
-      typeof req.body?.assistantVoiceId === "string" && req.body.assistantVoiceId.trim()
-        ? req.body.assistantVoiceId.trim()
-        : undefined;
+    const realtime = useOpenAiRealtimeVoice();
 
     const [existing] = await db.select({ id: sdrConfigs.id }).from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
     if (!existing) {
       return res.status(400).json({ error: "Save SDR Agent configuration before choosing stack models" });
     }
-    await db
-      .update(sdrConfigs)
-      .set({
-        sttModel,
-        llmModel,
-        ttsModel,
-        ...(assistantVoiceId ? { assistantVoiceId } : {}),
-        updatedAt: new Date(),
-      } as any)
-      .where(eq(sdrConfigs.id, existing.id));
+
+    if (realtime) {
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (typeof req.body?.realtimeModel === "string" || typeof req.body?.sttModel === "string") {
+        // Accept either field from the realtime UI model select
+        patch.llmModel = resolveRealtimeModel(req.body?.realtimeModel || req.body?.sttModel || req.body?.llmModel);
+      }
+      if (typeof req.body?.assistantVoiceId === "string" && req.body.assistantVoiceId.trim()) {
+        patch.assistantVoiceId = resolveRealtimeVoice(req.body.assistantVoiceId);
+      }
+      await db.update(sdrConfigs).set(patch as any).where(eq(sdrConfigs.id, existing.id));
+    } else {
+      const sttModel = resolveSttModel(req.body?.sttModel);
+      const llmModel = resolveLlmModel(req.body?.llmModel);
+      const ttsModel = resolveTtsModel(req.body?.ttsModel);
+      const assistantVoiceId =
+        typeof req.body?.assistantVoiceId === "string" && req.body.assistantVoiceId.trim()
+          ? req.body.assistantVoiceId.trim()
+          : undefined;
+      await db
+        .update(sdrConfigs)
+        .set({
+          sttModel,
+          llmModel,
+          ttsModel,
+          ...(assistantVoiceId ? { assistantVoiceId } : {}),
+          updatedAt: new Date(),
+        } as any)
+        .where(eq(sdrConfigs.id, existing.id));
+    }
 
     const [config] = await db.select().from(sdrConfigs).where(eq(sdrConfigs.workspaceId, workspaceId));
     let voices: Array<{ id: string; name: string }> = [];
-    try {
-      const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
-      voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
-    } catch {
-      voices = [];
+    if (!realtime) {
+      try {
+        const { ElevenLabsClient } = await import("../lib/calling/elevenlabs-client.js");
+        voices = (await new ElevenLabsClient().listVoices()).map((v) => ({ id: v.id, name: v.name }));
+      } catch {
+        voices = [];
+      }
     }
     const voiceId = config?.assistantVoiceId || null;
     res.json(
@@ -739,6 +766,9 @@ router.patch("/api/sdr/voice-stack", async (req: Request, res: Response) => {
         voiceId,
         voiceName: voices.find((v) => v.id === voiceId)?.name || null,
         voices,
+        realtime,
+        realtimeModel: (config as any)?.llmModel || process.env.OPENAI_REALTIME_MODEL,
+        realtimeVoice: voiceId || process.env.OPENAI_REALTIME_VOICE,
       })
     );
   } catch (err: any) {

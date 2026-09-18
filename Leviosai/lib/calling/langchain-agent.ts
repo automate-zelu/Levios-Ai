@@ -30,12 +30,14 @@ function createCallLlm(model: string, temperature: number): ChatOpenAI | ChatAnt
     return new ChatAnthropic({
       model: id,
       temperature,
+      maxTokens: 90,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     });
   }
   return new ChatOpenAI({
     model: isClaudeModel(id) ? "gpt-4o" : id,
     temperature,
+    maxTokens: 90,
     openAIApiKey: process.env.OPENAI_API_KEY,
   });
 }
@@ -102,7 +104,7 @@ export class LangChainCallAgent {
       !!normalized.organizationId && hasCalendarPromptBlock(normalized.systemPrompt);
 
     this.llmModel = normalized.llmModel || "gpt-4o";
-    this.llm = createCallLlm(this.llmModel, 0.4);
+    this.llm = createCallLlm(this.llmModel, 0.3);
 
     this.tools = this.buildTools();
     this.llmWithTools =
@@ -185,7 +187,7 @@ export class LangChainCallAgent {
       new DynamicStructuredTool({
         name: "book_appointment",
         description:
-          "Book an appointment on the connected calendar after the lead confirms a specific slot. Pass ISO-8601 start time from check_availability.",
+          "Book an appointment after the lead confirms a slot. Lead name/phone/email are already on the CRM record — do not require re-collection. Pass ISO-8601 start from check_availability.",
         schema: z.object({
           scheduledAt: z
             .string()
@@ -262,8 +264,8 @@ export class LangChainCallAgent {
               appointmentId: result.appointmentId,
               syncedToCalendar: true,
               scheduledAt: when.toISOString(),
-              message: "Booked on CRM and calendar. Confirm the time verbally with the lead.",
-              hint: "Confirm the booking succeeded and restate the time clearly.",
+              message: "Booked on CRM and calendar. Confirm the time verbally. Do not re-ask for name or phone.",
+              hint: "Confirm booking in one short sentence using the CRM lead name on file unless they changed it.",
             });
           } catch (err: any) {
             return JSON.stringify({
@@ -353,6 +355,8 @@ export class LangChainCallAgent {
       } catch {
         // non-fatal
       }
+      inputForModel =
+        `${inputForModel}\n\n[Voice style: reply in ONE short spoken sentence, max ~20 words. Do not re-ask for CRM name/phone already on file unless they want changes.]`;
     } else {
       inputForModel =
         `${trimmed}\n\n(This is an internal instruction for you, not something the lead said.)`;

@@ -14,7 +14,6 @@ import BillingPageLive from "./pages/BillingPage.jsx";
 import SDROnboarding from "./pages/SDROnboarding.jsx";
 import AdminPanel from "./pages/AdminPanel.jsx";
 import LeadDetailPage from "./pages/LeadDetailPage.jsx";
-import VoiceAIPage from "./pages/VoiceAIPage.jsx";
 import BookingsPage from "./pages/BookingsPage.jsx";
 import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
@@ -3573,7 +3572,6 @@ const PAGE_TO_PATH = {
   "SDR Agent": "/sdr",
   "AI Calling": "/calling",
   "Live Calls": "/live-calls",
-  "Voice AI": "/voice-ai",
   "SMS Inbox": "/sdr-sms",
   "Email Inbox": "/sdr-email",
   "SDR Setup": "/sdr-setup",
@@ -3663,6 +3661,10 @@ export default function CatalystApp() {
   // ── Legacy /twilio → SDR Setup ─────────────────────────────────────────────
   if (location.pathname === "/twilio") {
     navigate("/sdr-setup", { replace: true });
+    return null;
+  }
+  if (location.pathname === "/voice-ai") {
+    navigate("/sdr", { replace: true });
     return null;
   }
   if (location.pathname === "/appointments") {
@@ -3773,8 +3775,7 @@ export default function CatalystApp() {
     // All AI SDR product surfaces in one section (setup → config → voice → calls)
     { section: "AI SDR" },
     { name: "SDR Setup", icon: "🛠️", sub: "Twilio · Gmail" },
-    { name: "SDR Agent", icon: "🤖", sub: "Prompt · Templates" },
-    { name: "Voice AI", icon: "🎙️", sub: "ElevenLabs voice" },
+    { name: "SDR Agent", icon: "🤖", sub: "Prompt · Realtime voice" },
     { name: "AI Calling", icon: "📞", sub: "Bookings · Outcomes" },
     { name: "Live Calls", icon: "🔴", sub: "Live transcript" },
     { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
@@ -3799,7 +3800,6 @@ export default function CatalystApp() {
       case "Conversation Replay": return <ConversationReplayPage />;
       case "Sandbox": return <SandboxPage setPage={navigateTo} />;
       case "Proposals & Sales": return <ProposalsPage />;
-      case "Voice AI": return <VoiceAIPage />;
       case "Connect Your Tech": return <ConnectTechPage />;
       case "Billing": return <BillingPageLive />;
       case "Settings": return <SettingsPage />;

@@ -39,17 +39,27 @@ export default function AgentStack({ compact = false }) {
   const stages = stack?.stages || [];
   const typical = stack?.typicalTotalMs ?? 980;
   const last = stack?.lastTotalMs ?? null;
+  const isRealtime = stack?.mode === "realtime";
 
   const patchStack = async (partial) => {
     setSaving(true);
     try {
-      const next = await sdrApi.saveVoiceStack({
-        sttModel: stages.find((s) => s.id === "transcriber")?.selected,
-        llmModel: stages.find((s) => s.id === "llm")?.selected,
-        ttsModel: stages.find((s) => s.id === "voice")?.selected,
-        assistantVoiceId: stages.find((s) => s.id === "voice")?.voiceId,
-        ...partial,
-      });
+      const realtimeStage = stages.find((s) => s.id === "realtime");
+      const next = await sdrApi.saveVoiceStack(
+        isRealtime
+          ? {
+              realtimeModel: realtimeStage?.selected,
+              assistantVoiceId: realtimeStage?.voiceId,
+              ...partial,
+            }
+          : {
+              sttModel: stages.find((s) => s.id === "transcriber")?.selected,
+              llmModel: stages.find((s) => s.id === "llm")?.selected,
+              ttsModel: stages.find((s) => s.id === "voice")?.selected,
+              assistantVoiceId: stages.find((s) => s.id === "voice")?.voiceId,
+              ...partial,
+            }
+      );
       setStack(next);
     } catch {
       /* keep current */
@@ -65,14 +75,21 @@ export default function AgentStack({ compact = false }) {
   ];
 
   return (
-    <section className={`agent-stack${compact ? " is-compact" : ""}`} aria-label="Conversation stack">
+    <section
+      className={`agent-stack${compact ? " is-compact" : ""}${isRealtime ? " is-realtime" : ""}`}
+      aria-label="Conversation stack"
+    >
       <div className="agent-stack-head">
-        <h2>Stack</h2>
+        <h2>
+          Stack
+          {stack?.modeLabel ? <small className="agent-stack-mode">{stack.modeLabel}</small> : null}
+        </h2>
         <span>
           {msLabel(last ?? typical)} {last != null ? "last" : "typical"}
         </span>
       </div>
-      <ol className="agent-stack-row">
+      {stack?.note ? <p className="agent-stack-note">{stack.note}</p> : null}
+      <ol className={`agent-stack-row${isRealtime ? " is-realtime" : ""}`}>
         {(stages.length ? stages : fallback).map((stage) => (
           <li key={stage.id} className={`agent-stack-card is-${stage.id}`}>
             <div className="agent-stack-meta">
@@ -87,8 +104,9 @@ export default function AgentStack({ compact = false }) {
                 <select
                   className="agent-stack-select"
                   value={stage.selected}
-                  disabled={saving || !(stage.options || []).length}
+                  disabled={saving || !(stage.options || []).length || stage.locked}
                   onChange={(e) => {
+                    if (stage.id === "realtime") patchStack({ realtimeModel: e.target.value });
                     if (stage.id === "transcriber") patchStack({ sttModel: e.target.value });
                     if (stage.id === "llm") patchStack({ llmModel: e.target.value });
                     if (stage.id === "voice") patchStack({ ttsModel: e.target.value });
@@ -105,22 +123,44 @@ export default function AgentStack({ compact = false }) {
                   ))}
                 </select>
               </label>
-              {stage.id === "voice" && (stage.voices || []).length > 0 && (
+              {(stage.id === "voice" || stage.id === "realtime") && (stage.voices || []).length > 0 && (
                 <label className="agent-stack-select-wrap">
                   <span className="agent-stack-field">Speaker</span>
                   <select
                     className="agent-stack-select"
-                    value={stage.voiceId || ""}
+                    value={
+                      (stage.voices || []).some((v) => v.id === stage.voiceId)
+                        ? stage.voiceId || ""
+                        : stage.voiceId?.startsWith("voice_")
+                          ? stage.voiceId
+                          : stage.voices?.[0]?.id || ""
+                    }
                     disabled={saving}
                     onChange={(e) => patchStack({ assistantVoiceId: e.target.value })}
                   >
-                    <option value="">Default</option>
+                    {stage.id === "realtime" ? null : <option value="">Default</option>}
                     {(stage.voices || []).map((voice) => (
                       <option key={voice.id} value={voice.id}>
                         {voice.name}
                       </option>
                     ))}
                   </select>
+                </label>
+              )}
+              {stage.id === "realtime" && (
+                <label className="agent-stack-select-wrap">
+                  <span className="agent-stack-field">Custom voice id</span>
+                  <input
+                    className="agent-stack-select"
+                    type="text"
+                    placeholder="voice_…"
+                    disabled={saving}
+                    defaultValue={stage.voiceId?.startsWith("voice_") ? stage.voiceId : ""}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v) patchStack({ assistantVoiceId: v });
+                    }}
+                  />
                 </label>
               )}
             </div>

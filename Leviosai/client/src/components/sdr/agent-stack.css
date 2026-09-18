@@ -116,6 +116,30 @@
   outline-offset: 1px;
 }
 
+.agent-stack-mode {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #2eb8a8;
+}
+
+.agent-stack-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.agent-stack-row.is-realtime {
+  grid-template-columns: 1fr;
+}
+
+.agent-stack-card.is-realtime {
+  box-shadow: inset 3px 0 0 #2eb8a8;
+}
+
 @media (max-width: 720px) {
   .agent-stack-row {
     grid-template-columns: 1fr;

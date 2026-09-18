@@ -459,12 +459,7 @@ export default function SDRSetupPage() {
           <button type="button" onClick={() => navigate("/sdr")}>
             <small>Prompt</small>
             <strong>SDR Agent</strong>
-            <span>System prompt, knowledge base, templates, timing.</span>
-          </button>
-          <button type="button" onClick={() => navigate("/voice-ai")}>
-            <small>Voice</small>
-            <strong>Voice AI</strong>
-            <span>ElevenLabs voice used on outbound calls.</span>
+            <span>System prompt, OpenAI Realtime voice, knowledge, timing.</span>
           </button>
           <button type="button" onClick={() => navigate("/calling")}>
             <small>Activity</small>

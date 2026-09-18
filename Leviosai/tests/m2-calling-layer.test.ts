@@ -36,8 +36,15 @@ import {
   TTS_TIMEOUT_MS,
   LEAD_TURN_GAP_MS,
   LEAD_TURN_MIN_WORDS,
+  LEAD_TURN_INCOMPLETE_GAP_MS,
+  DEEPGRAM_REST_FLUSH_MS,
+  DEEPGRAM_REST_TURN_HOLD_MS,
+  leadTurnGapMs,
+  turnHoldMs,
+  looksLikeIncompleteUtterance,
   transcriptHasLeadSpeech,
 } from "../lib/calling/pipeline-helpers.js";
+import { buildLeadContextBlock } from "../lib/calling/lead-context.js";
 
 // ─── TranscriptStore ──────────────────────────────────────────────────────────
 
@@ -143,7 +150,10 @@ describe("M2 pipeline helpers", () => {
     assert.equal(DEEPGRAM_MAX_RECONNECTS, 2);
     assert.ok(LLM_RESPONSE_TIMEOUT_MS >= 10_000);
     assert.ok(TTS_TIMEOUT_MS >= 5_000);
-    assert.ok(LEAD_TURN_GAP_MS >= 1000);
+    assert.ok(LEAD_TURN_GAP_MS >= 100 && LEAD_TURN_GAP_MS <= 500);
+    assert.ok(LEAD_TURN_INCOMPLETE_GAP_MS > LEAD_TURN_GAP_MS);
+    assert.ok(DEEPGRAM_REST_FLUSH_MS >= 800 && DEEPGRAM_REST_FLUSH_MS <= 2000);
+    assert.ok(DEEPGRAM_REST_TURN_HOLD_MS > DEEPGRAM_REST_FLUSH_MS);
   });
 
   it("merges lead STT fragments into one turn", () => {
@@ -167,6 +177,41 @@ describe("M2 pipeline helpers", () => {
     assert.equal(shouldAcceptRestTranscript("   "), false);
     assert.equal(shouldAcceptRestTranscript("???"), false);
     assert.equal(shouldAcceptRestTranscript(""), false);
+  });
+
+  it("holds incomplete lead fragments longer before flushing", () => {
+    assert.equal(looksLikeIncompleteUtterance("my name is"), true);
+    assert.equal(looksLikeIncompleteUtterance("my address is on"), true);
+    assert.equal(looksLikeIncompleteUtterance("and the"), true);
+    assert.equal(looksLikeIncompleteUtterance("i am from"), true);
+    assert.equal(looksLikeIncompleteUtterance("yes it"), true);
+    assert.equal(looksLikeIncompleteUtterance("Yes. I am"), true);
+    assert.equal(looksLikeIncompleteUtterance("I'm having a problem. My system."), true);
+    assert.equal(looksLikeIncompleteUtterance("yes"), false);
+    assert.equal(looksLikeIncompleteUtterance("Yes."), false);
+    assert.equal(looksLikeIncompleteUtterance("thursday at four"), false);
+    assert.ok(turnHoldMs("Yes. I am", "rest") >= 2000);
+    assert.ok(turnHoldMs("yes", "live") <= 300);
+    assert.ok(turnHoldMs("yes", "rest") <= 600);
+  });
+
+  it("builds CRM confirm-only lead context for the agent", () => {
+    const block = buildLeadContextBlock({
+      firstName: "John",
+      lastName: "Smith",
+      phone: "+15551234567",
+      email: "john@example.com",
+      customFields: JSON.stringify({ address: "11 Ontario, Oshawa" }),
+    });
+    assert.match(block, /John Smith/);
+    assert.match(block, /confirm/i);
+    assert.match(block, /Do NOT ask/i);
+    assert.match(block, /11 Ontario/);
+    assert.equal(
+      buildLeadContextBlock({ firstName: null, lastName: null, phone: null }),
+      buildLeadContextBlock({ firstName: null, lastName: null, phone: null })
+    );
+    assert.match(buildLeadContextBlock({}), /Unknown/);
   });
 
   it("accumulates short REST fragments across batches into one lead turn", () => {

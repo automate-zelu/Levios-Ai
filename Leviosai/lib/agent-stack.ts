@@ -1,4 +1,4 @@
-/** Conversation stack: transcriber → LLM → voice. Options are APIs already wired in-app. */
+/** Conversation stack: classic STT→LLM→TTS, or OpenAI Realtime speech-to-speech. */
 
 export interface StackOption {
   id: string;
@@ -8,7 +8,7 @@ export interface StackOption {
 }
 
 export interface StackStage {
-  id: "transcriber" | "llm" | "voice";
+  id: "transcriber" | "llm" | "voice" | "realtime";
   label: string;
   provider: string;
   model: string;
@@ -19,6 +19,7 @@ export interface StackStage {
   voiceId?: string | null;
   voiceName?: string | null;
   voices?: Array<{ id: string; name: string }>;
+  locked?: boolean;
 }
 
 export interface LatencySample {
@@ -53,9 +54,30 @@ export const TTS_OPTIONS: StackOption[] = [
   { id: "eleven_multilingual_v2", label: "Multilingual v2", typicalMs: 420, provider: "ElevenLabs" },
 ];
 
+export const REALTIME_MODEL_OPTIONS: StackOption[] = [
+  { id: "gpt-realtime", label: "GPT Realtime", typicalMs: 420, provider: "OpenAI" },
+  { id: "gpt-realtime-2.1", label: "GPT Realtime 2.1", typicalMs: 400, provider: "OpenAI" },
+  { id: "gpt-4o-realtime-preview", label: "GPT-4o Realtime Preview", typicalMs: 450, provider: "OpenAI" },
+];
+
+export const REALTIME_VOICE_OPTIONS: Array<{ id: string; name: string }> = [
+  { id: "marin", name: "Marin (recommended)" },
+  { id: "cedar", name: "Cedar (recommended)" },
+  { id: "alloy", name: "Alloy" },
+  { id: "ash", name: "Ash" },
+  { id: "ballad", name: "Ballad" },
+  { id: "coral", name: "Coral" },
+  { id: "echo", name: "Echo" },
+  { id: "sage", name: "Sage" },
+  { id: "shimmer", name: "Shimmer" },
+  { id: "verse", name: "Verse" },
+];
+
 export const DEFAULT_STT_MODEL = "nova-2";
 export const DEFAULT_LLM_MODEL = "gpt-4o";
 export const DEFAULT_TTS_MODEL = "eleven_turbo_v2";
+export const DEFAULT_REALTIME_MODEL = "gpt-realtime";
+export const DEFAULT_REALTIME_VOICE = "marin";
 
 export const DEFAULT_AGENT_STACK: Omit<StackStage, "lastMs" | "selected" | "options">[] = [
   {
@@ -102,6 +124,20 @@ export function resolveTtsModel(id?: string | null): string {
   return pick(TTS_OPTIONS, id, DEFAULT_TTS_MODEL).id;
 }
 
+export function resolveRealtimeModel(id?: string | null): string {
+  return pick(REALTIME_MODEL_OPTIONS, id, DEFAULT_REALTIME_MODEL).id;
+}
+
+export function resolveRealtimeVoice(id?: string | null): string {
+  const wanted = (id || "").trim();
+  if (!wanted) return DEFAULT_REALTIME_VOICE;
+  const lower = wanted.toLowerCase();
+  if (REALTIME_VOICE_OPTIONS.some((v) => v.id === lower)) return lower;
+  // Allow custom OpenAI voice ids
+  if (/^voice_[a-zA-Z0-9_-]+$/.test(wanted)) return wanted;
+  return DEFAULT_REALTIME_VOICE;
+}
+
 export function recordWorkspaceLatency(workspaceId: string, sample: LatencySample): void {
   lastByWorkspace.set(workspaceId, {
     sttMs: Math.max(0, Math.round(sample.sttMs)),
@@ -122,11 +158,60 @@ export function buildAgentStack(opts: {
   sttModel?: string | null;
   llmModel?: string | null;
   ttsModel?: string | null;
+  /** When true, live calls use OpenAI Realtime (not Deepgram/ElevenLabs). */
+  realtime?: boolean;
+  realtimeModel?: string | null;
+  realtimeVoice?: string | null;
 }): {
+  mode: "realtime" | "classic";
+  modeLabel: string;
   stages: StackStage[];
   typicalTotalMs: number;
   lastTotalMs: number | null;
+  note?: string;
 } {
+  if (opts.realtime) {
+    const model = pick(
+      REALTIME_MODEL_OPTIONS,
+      opts.realtimeModel || process.env.OPENAI_REALTIME_MODEL,
+      DEFAULT_REALTIME_MODEL
+    );
+    const voiceId = resolveRealtimeVoice(
+      opts.realtimeVoice || opts.voiceId || process.env.OPENAI_REALTIME_VOICE
+    );
+    const voiceName = REALTIME_VOICE_OPTIONS.find((v) => v.id === voiceId)?.name || voiceId;
+    const voices = [...REALTIME_VOICE_OPTIONS];
+    if (voiceId.startsWith("voice_") && !voices.some((v) => v.id === voiceId)) {
+      voices.push({ id: voiceId, name: `Custom (${voiceId})` });
+    }
+
+    const stages: StackStage[] = [
+      {
+        id: "realtime",
+        label: "Speech-to-speech",
+        provider: "OpenAI",
+        model: model.label,
+        selected: model.id,
+        options: REALTIME_MODEL_OPTIONS,
+        typicalMs: model.typicalMs,
+        lastMs: null,
+        voiceId,
+        voiceName,
+        voices,
+        locked: false,
+      },
+    ];
+
+    return {
+      mode: "realtime",
+      modeLabel: "OpenAI Realtime",
+      stages,
+      typicalTotalMs: model.typicalMs,
+      lastTotalMs: null,
+      note: "Live calls use one OpenAI Realtime session (listen + think + speak). Deepgram / ElevenLabs settings apply only if CALL_VOICE_STACK=classic.",
+    };
+  }
+
   const last = opts.workspaceId ? getWorkspaceLatency(opts.workspaceId) : null;
   const stt = pick(TRANSCRIBER_OPTIONS, opts.sttModel, DEFAULT_STT_MODEL);
   const llm = pick(LLM_OPTIONS, opts.llmModel, DEFAULT_LLM_MODEL);
@@ -170,7 +255,13 @@ export function buildAgentStack(opts: {
 
   const typicalTotalMs = stages.reduce((sum, s) => sum + s.typicalMs, 0);
   const lastTotalMs = last ? last.sttMs + last.llmMs + last.ttsMs : null;
-  return { stages, typicalTotalMs, lastTotalMs };
+  return {
+    mode: "classic",
+    modeLabel: "Classic pipeline",
+    stages,
+    typicalTotalMs,
+    lastTotalMs,
+  };
 }
 
 export function averageSample(samples: LatencySample[]): LatencySample {

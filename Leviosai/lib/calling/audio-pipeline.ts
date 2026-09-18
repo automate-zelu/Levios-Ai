@@ -19,7 +19,7 @@
 
 import type WebSocket from "ws";
 import { db } from "../db.js";
-import { sdrCallSessions, sdrConfigs, sdrEnrollments, workspaces } from "../schema.js";
+import { sdrCallSessions, sdrConfigs, sdrEnrollments, workspaces, leads } from "../schema.js";
 import { and, eq, sql } from "drizzle-orm";
 import { DeepgramSTTClient } from "./deepgram-client.js";
 import { ElevenLabsClient } from "./elevenlabs-client.js";
@@ -41,7 +41,11 @@ import {
   countWords,
   transcriptHasLeadSpeech,
   resolvePostCallOutcome,
+  turnHoldMs,
+  type SttSource,
+  shortenGreeting,
 } from "./pipeline-helpers.js";
+import { buildLeadContextBlock } from "./lead-context.js";
 import {
   clearSayFallbackRedirect,
   isSayFallbackRedirect,
@@ -182,9 +186,21 @@ export class AudioPipeline {
     liveCallRegistry.start(sessionId, session.workspaceId, this.transcript.toJSON());
     liveCallRegistry.setStatus(sessionId, "active");
 
+    let leadBlock = "";
+    if (session.leadId) {
+      try {
+        const [lead] = await db.select().from(leads).where(eq(leads.id, session.leadId)).limit(1);
+        if (lead) leadBlock = buildLeadContextBlock(lead);
+      } catch (err: any) {
+        console.warn(`Lead context load failed for session ${sessionId}:`, err.message);
+      }
+    }
+
+    const systemPrompt = [config.systemPrompt || "", leadBlock].filter(Boolean).join("\n\n");
+
     await this.agent.init({
       sessionId,
-      systemPrompt: config.systemPrompt || "",
+      systemPrompt,
       workspaceId: session.workspaceId,
       organizationId: wsRow?.organizationId || 0,
       leadId: session.leadId ?? null,
@@ -201,8 +217,18 @@ export class AudioPipeline {
       console.error(`🎙️  Deepgram connect error for session ${sessionId}:`, err.message)
     );
 
-    this.deepgram.onTranscript((text: string) => {
-      void this.onLeadTranscript(ws, sessionId, text, config.assistantVoiceId);
+    this.deepgram.onTranscript((text: string, meta) => {
+      void this.onLeadTranscript(ws, sessionId, text, config.assistantVoiceId, meta?.source || "live");
+    });
+
+    // Partials only barge-in — never start an LLM turn from interim text
+    this.deepgram.onPartial((text: string) => {
+      if (!this.isSpeaking || !this.abortTTS || !text.trim()) return;
+      console.log(`🎙️  Barge-in (partial) — stopping AI speech: "${text}"`);
+      this.clearTwilioAudio(ws);
+      this.abortTTS();
+      this.abortTTS = null;
+      this.isSpeaking = false;
     });
 
     this.deepgram.onError((err: Error) => {
@@ -237,7 +263,7 @@ export class AudioPipeline {
 
           try {
             // Brief settle — international carriers often open the stream before the human is on the line.
-            await new Promise((r) => setTimeout(r, 600));
+            await new Promise((r) => setTimeout(r, 300));
             if (this.ended) break;
 
             console.log(`🤖 Generating greeting for session ${sessionId}...`);
@@ -259,14 +285,11 @@ export class AudioPipeline {
             console.log(`🤖 Greeting: "${greeting.substring(0, 100)}"`);
             this.appendLive(sessionId, "ai", greeting);
 
-            // Speak on the live media stream (do NOT Twilio <Say>-redirect for the greeting —
-            // redirect closes the socket and a buffered "stop" was finalizing the call).
+            // Speak on the live media stream. Keep STT live for barge-in (inbound ≠ agent audio).
             this.isSpeaking = true;
-            this.deepgram.muteInput();
             try {
               await this.streamTTS(ws, greeting, config.assistantVoiceId, sessionId);
             } finally {
-              this.deepgram.unmuteInput();
               this.isSpeaking = false;
               this.abortTTS = null;
             }
@@ -332,13 +355,11 @@ export class AudioPipeline {
         console.log(`📞 Silence re-prompt for session ${sessionId}`);
         this.appendLive(sessionId, "ai", nudge);
         this.isSpeaking = true;
-        this.deepgram.muteInput();
         try {
           await this.streamTTS(ws, nudge, voiceId, sessionId);
         } catch (err: any) {
           console.error(`Silence re-prompt failed for ${sessionId}:`, err.message);
         } finally {
-          this.deepgram.unmuteInput();
           this.isSpeaking = false;
           this.abortTTS = null;
         }
@@ -353,14 +374,15 @@ export class AudioPipeline {
   }
 
   /**
-   * Buffer lead speech fragments and only reply after LEAD_TURN_GAP_MS of quiet.
-   * Merges "could you" + "tell me more…" into one professional turn.
+   * Buffer lead speech fragments and only reply after turnHoldMs of quiet.
+   * Live STT already ends on acoustic silence — merge window is tiny.
    */
   private async onLeadTranscript(
     ws: WebSocket,
     sessionId: string,
     text: string,
-    voiceId: string | null | undefined
+    voiceId: string | null | undefined,
+    source: SttSource = "live"
   ): Promise<void> {
     if (this.ended) return;
     this.clearSilenceReprompt();
@@ -371,7 +393,6 @@ export class AudioPipeline {
         this.clearTwilioAudio(ws);
         this.abortTTS();
         this.abortTTS = null;
-        await new Promise((resolve) => setTimeout(resolve, 150));
         this.isSpeaking = false;
       } else {
         console.log(`🎙️  Transcript while AI generating (queued into turn): "${text}"`);
@@ -379,13 +400,14 @@ export class AudioPipeline {
     }
 
     this.pendingLeadTurn = mergeUtteranceFragments(this.pendingLeadTurn, text);
-    console.log(`👤 Lead (buffering turn): "${this.pendingLeadTurn}"`);
+    const gapMs = turnHoldMs(this.pendingLeadTurn, source);
+    console.log(`👤 Lead (buffering turn, ${source}, hold=${gapMs}ms): "${this.pendingLeadTurn}"`);
 
     if (this.leadTurnTimer) clearTimeout(this.leadTurnTimer);
     this.leadTurnTimer = setTimeout(() => {
       this.leadTurnTimer = null;
       void this.flushLeadTurn(ws, sessionId, voiceId);
-    }, LEAD_TURN_GAP_MS);
+    }, gapMs);
   }
 
   private async flushLeadTurn(
@@ -403,14 +425,28 @@ export class AudioPipeline {
       return;
     }
 
-    // Another response already in flight — fold into a follow-up only after it ends
-    if (this.activeResponse || this.isSpeaking) {
-      console.log(`👤 Lead turn delayed until AI finishes: "${text}"`);
-      this.pendingLeadTurn = text;
-      this.leadTurnTimer = setTimeout(() => {
-        this.leadTurnTimer = null;
-        void this.flushLeadTurn(ws, sessionId, voiceId);
-      }, 400);
+    // Wait only while AI audio is actually playing. After barge-in, isSpeaking is
+    // false — allow the new lead turn through even if the prior TTS promise is winding down.
+    if (this.isSpeaking) {
+      console.log(`👤 Lead turn delayed until AI finishes speaking: "${text}"`);
+      this.pendingLeadTurn = mergeUtteranceFragments(this.pendingLeadTurn, text);
+      if (!this.leadTurnTimer) {
+        this.leadTurnTimer = setTimeout(() => {
+          this.leadTurnTimer = null;
+          void this.flushLeadTurn(ws, sessionId, voiceId);
+        }, turnHoldMs(this.pendingLeadTurn, "live"));
+      }
+      return;
+    }
+    if (this.activeResponse) {
+      console.log(`👤 Lead turn waiting for in-flight LLM/TTS cleanup: "${text}"`);
+      this.pendingLeadTurn = mergeUtteranceFragments(this.pendingLeadTurn, text);
+      if (!this.leadTurnTimer) {
+        this.leadTurnTimer = setTimeout(() => {
+          this.leadTurnTimer = null;
+          void this.flushLeadTurn(ws, sessionId, voiceId);
+        }, 200);
+      }
       return;
     }
 
@@ -457,12 +493,11 @@ export class AudioPipeline {
         console.log(`🤖 AI response: "${aiResponse.substring(0, 80)}"`);
 
         this.isSpeaking = true;
-        this.deepgram.muteInput();
         ttsStartedAt = Date.now();
         try {
           await this.streamTTS(ws, aiResponse, voiceId, sessionId);
         } finally {
-          this.deepgram.unmuteInput();
+          /* STT stays live for barge-in */
         }
 
         const latency = measureLatency(llmStartedAt, ttsStartedAt);
@@ -538,52 +573,89 @@ export class AudioPipeline {
       aborted = true;
     };
 
-    let audio: Buffer;
-    try {
-      audio = await withTimeout(
-        this.elevenlabs.synthesizeMulawBuffer(text, voiceId, this.ttsModel),
-        TTS_TIMEOUT_MS,
-        "ElevenLabs TTS"
-      );
-    } catch (err: any) {
-      await this.fallbackToTwilioSay(sessionId, text, err.message || "ElevenLabs open failed");
-      return;
-    }
-
-    // Minimum audible payload (~0.25s). Anything smaller is treated as failed synthesis.
-    if (!audio.length || audio.length < 2000) {
-      await this.fallbackToTwilioSay(
-        sessionId,
-        text,
-        `ElevenLabs returned only ${audio.length} μ-law bytes`
-      );
-      return;
-    }
-
     if (!this.streamSid || ws.readyState !== ws.OPEN) {
       await this.fallbackToTwilioSay(sessionId, text, "Twilio stream not open for TTS");
       return;
     }
 
-    let sent = 0;
-    for (let i = 0; i < audio.length; i += TWILIO_MULAW_FRAME_BYTES) {
-      if (aborted || this.ended || ws.readyState !== ws.OPEN) break;
-      const frame = audio.subarray(i, Math.min(i + TWILIO_MULAW_FRAME_BYTES, audio.length));
-      // Pad final short frame with μ-law silence (0xff) so Twilio gets a full 20ms packet
-      const payload =
-        frame.length === TWILIO_MULAW_FRAME_BYTES
-          ? frame
-          : Buffer.concat([frame, Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - frame.length, 0xff)]);
-
-      ws.send(
-        JSON.stringify({
-          event: "media",
-          streamSid: this.streamSid,
-          media: { payload: payload.toString("base64") },
-        })
+    // Stream μ-law from ElevenLabs and pace 20ms frames as bytes arrive —
+    // first audio reaches the lead ~synthesis TTFB, not after full render.
+    let stream: import("stream").Readable;
+    try {
+      stream = await withTimeout(
+        this.elevenlabs.synthesizeStream(text, voiceId, this.ttsModel),
+        TTS_TIMEOUT_MS,
+        "ElevenLabs TTS open"
       );
-      sent += payload.length;
-      await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
+    } catch (err: any) {
+      // Fallback: full-buffer synthesis
+      try {
+        const audio = await withTimeout(
+          this.elevenlabs.synthesizeMulawBuffer(text, voiceId, this.ttsModel),
+          TTS_TIMEOUT_MS,
+          "ElevenLabs TTS buffer"
+        );
+        if (aborted || this.ended) return;
+        await this.paceMulawToTwilio(ws, audio, () => aborted || this.ended, sessionId);
+      } catch (err2: any) {
+        await this.fallbackToTwilioSay(sessionId, text, err2.message || err.message || "ElevenLabs failed");
+      }
+      return;
+    }
+
+    let pending = Buffer.alloc(0);
+    let sent = 0;
+    const startedAt = Date.now();
+    let firstByteAt = 0;
+
+    try {
+      for await (const chunk of stream) {
+        if (aborted || this.ended || ws.readyState !== ws.OPEN) break;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (!firstByteAt && buf.length) {
+          firstByteAt = Date.now();
+          console.log(
+            `🔊 TTS first byte in ${firstByteAt - startedAt}ms session=${sessionId}`
+          );
+        }
+        pending = Buffer.concat([pending, buf]);
+
+        while (pending.length >= TWILIO_MULAW_FRAME_BYTES) {
+          if (aborted || this.ended || ws.readyState !== ws.OPEN) break;
+          const frame = pending.subarray(0, TWILIO_MULAW_FRAME_BYTES);
+          pending = pending.subarray(TWILIO_MULAW_FRAME_BYTES);
+          ws.send(
+            JSON.stringify({
+              event: "media",
+              streamSid: this.streamSid,
+              media: { payload: frame.toString("base64") },
+            })
+          );
+          sent += frame.length;
+          await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
+        }
+      }
+
+      if (!aborted && !this.ended && pending.length > 0 && ws.readyState === ws.OPEN) {
+        const payload = Buffer.concat([
+          pending,
+          Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - pending.length, 0xff),
+        ]);
+        ws.send(
+          JSON.stringify({
+            event: "media",
+            streamSid: this.streamSid,
+            media: { payload: payload.toString("base64") },
+          })
+        );
+        sent += payload.length;
+      }
+    } catch (err: any) {
+      if (!sent) {
+        await this.fallbackToTwilioSay(sessionId, text, err.message || "TTS stream failed");
+        return;
+      }
+      console.warn(`🔊 TTS stream ended early session=${sessionId}:`, err.message);
     }
 
     console.log(
@@ -603,6 +675,35 @@ export class AudioPipeline {
     if (!aborted && sent < 2000) {
       await this.fallbackToTwilioSay(sessionId, text, `Only ${sent} bytes reached Twilio`);
     }
+  }
+
+  private async paceMulawToTwilio(
+    ws: WebSocket,
+    audio: Buffer,
+    shouldStop: () => boolean,
+    sessionId: string
+  ): Promise<void> {
+    let sent = 0;
+    for (let i = 0; i < audio.length; i += TWILIO_MULAW_FRAME_BYTES) {
+      if (shouldStop() || ws.readyState !== ws.OPEN) break;
+      const frame = audio.subarray(i, Math.min(i + TWILIO_MULAW_FRAME_BYTES, audio.length));
+      const payload =
+        frame.length === TWILIO_MULAW_FRAME_BYTES
+          ? frame
+          : Buffer.concat([frame, Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - frame.length, 0xff)]);
+      ws.send(
+        JSON.stringify({
+          event: "media",
+          streamSid: this.streamSid,
+          media: { payload: payload.toString("base64") },
+        })
+      );
+      sent += payload.length;
+      await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
+    }
+    console.log(
+      `🔊 Sent ${sent} μ-law bytes (buffered) to Twilio (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
+    );
   }
 
   /** Twilio status callback — finalize even if the media socket is still open. */
@@ -709,16 +810,4 @@ export class AudioPipeline {
 }
 
 /** Keep the first spoken greeting short even if the model over-talks. */
-export function shortenGreeting(text: string, maxWords = 18): string {
-  const cleaned = (text || "").replace(/\s+/g, " ").trim();
-  if (!cleaned) {
-    return "Hi, this is Levios — is now a good time for a quick call?";
-  }
-  // Prefer first sentence if it's already concise
-  const sentence = cleaned.split(/(?<=[.!?])\s+/)[0]?.trim() || cleaned;
-  const words = sentence.split(/\s+/);
-  if (words.length <= maxWords) {
-    return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
-  }
-  return `${words.slice(0, maxWords).join(" ").replace(/[,:;–—-]+$/, "")}.`;
-}
+export { shortenGreeting } from "./pipeline-helpers.js";

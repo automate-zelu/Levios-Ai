@@ -33,7 +33,12 @@ import {
 } from "../lib/sdr-state-machine.js";
 import { enqueueJob, fallThroughToSms, storeEnrollmentJobId } from "../lib/sdr-queue.js";
 import { shouldRetryBusyCall, billableCallMinutes } from "../lib/sdr-m1-logic.js";
-import { AudioPipeline, abortCallPipeline } from "../lib/calling/audio-pipeline.js";
+import { AudioPipeline, abortCallPipeline as abortClassicPipeline } from "../lib/calling/audio-pipeline.js";
+import {
+  RealtimeAudioPipeline,
+  abortRealtimePipeline,
+  useOpenAiRealtimeVoice,
+} from "../lib/calling/realtime-audio-pipeline.js";
 import { ElevenLabsClient } from "../lib/calling/elevenlabs-client.js";
 import { persistTwilioRecording, openRecordingStream } from "../lib/calling/recording-storage.js";
 import { decrypt } from "../lib/crypto.js";
@@ -95,11 +100,25 @@ router.post("/api/call/connect/:sessionId", validateTwilioCallSession, async (re
 // This handler is exported and called from server.ts WebSocket upgrade handler.
 
 export async function handleCallStream(ws: WebSocket, sessionId: string): Promise<void> {
-  const pipeline = new AudioPipeline();
-  await pipeline.handleStream(ws, sessionId).catch((err: Error) => {
+  const run = async () => {
+    if (useOpenAiRealtimeVoice()) {
+      console.log(`📞 Using OpenAI Realtime voice stack for session ${sessionId}`);
+      const pipeline = new RealtimeAudioPipeline();
+      await pipeline.handleStream(ws, sessionId);
+      return;
+    }
+    const pipeline = new AudioPipeline();
+    await pipeline.handleStream(ws, sessionId);
+  };
+  await run().catch((err: Error) => {
     console.error(`Audio pipeline error for session ${sessionId}:`, err.message);
     ws.close(1011, err.message);
   });
+}
+
+function abortCallPipeline(sessionId: string): void {
+  abortRealtimePipeline(sessionId);
+  abortClassicPipeline(sessionId);
 }
 
 // ─── POST /api/call/status/:sessionId ────────────────────────────────────────
