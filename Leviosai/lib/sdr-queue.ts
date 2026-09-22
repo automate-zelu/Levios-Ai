@@ -22,7 +22,7 @@ import { planSmsFallthrough } from "./sdr-m1-logic.js";
 import { computeNextEnrollAfter } from "./sdr-eligibility.js";
 import { eq } from "drizzle-orm";
 import { sendEmailViaGmail } from "./gmail/send.js";
-import { getClientForWorkspace } from "./twilio-subaccount.js";
+import { sendOutboundSms, workspaceFromNumber } from "./telephony.js";
 import { isSdrDryRun } from "./sdr-dry-run.js";
 import { buildSdrTemplateContext, renderSdrTemplate } from "./sdr-template-vars.js";
 import { storage } from "./storage.js";
@@ -260,19 +260,13 @@ async function handleSendSms(enrollmentId: string): Promise<void> {
   try {
     if (isSdrDryRun()) {
       smsSid = `dry_sms_${Date.now()}`;
-      fromNumberUsed = workspace.twilioPhoneNumber || "dry-run";
+      fromNumberUsed = workspaceFromNumber(workspace) || "dry-run";
       console.log(`SDR: DRY RUN SMS for ${enrollmentId}: ${body.slice(0, 80)}`);
     } else {
-      const { client: twilioClient, fromNumber } = getClientForWorkspace(workspace);
-      if (!fromNumber) throw new Error("No phone number provisioned for this workspace");
       if (!lead.phone) throw new Error("Lead has no phone number");
-      fromNumberUsed = fromNumber;
-      const message = await twilioClient.messages.create({
-        body,
-        from: fromNumber,
-        to:   lead.phone,
-      });
-      smsSid = message.sid;
+      const sent = await sendOutboundSms(workspace, { to: lead.phone, body });
+      smsSid = sent.sid;
+      fromNumberUsed = sent.from;
     }
   } catch (err: any) {
     smsError = err.message;

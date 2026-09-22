@@ -4,6 +4,7 @@ import { COLORS, S } from "../theme.js";
 import { gmailApi, calendarApi } from "../api.js";
 import CalendarConnections from "../components/calendar/CalendarConnections.jsx";
 import TwilioByotCard from "../components/sdr/TwilioByotCard.jsx";
+import TelnyxByotCard from "../components/sdr/TelnyxByotCard.jsx";
 import GmailConnectCard from "../components/sdr/GmailConnectCard.jsx";
 import { CalendarToolsPanel } from "../components/sdr/CalendarToolsPanel.jsx";
 import AgentStack from "../components/sdr/AgentStack.jsx";
@@ -23,7 +24,7 @@ const PIPELINE_STEPS = [
   {
     id: "call",
     title: "2. AI phone call (Twilio + Deepgram + LangChain + ElevenLabs)",
-    body: "The sequence places an outbound call using your Twilio number and Voice AI selection. Live audio: speech→text (Deepgram) → single system prompt agent (LangChain) → voice (ElevenLabs). Objection handling lives inside that one prompt — not a separate module.",
+    body: "The sequence places an outbound call using your connected Twilio or Telnyx number and Voice AI selection. Live audio: speech→text (Deepgram) → single system prompt agent (LangChain) → voice (ElevenLabs). Objection handling lives inside that one prompt — not a separate module.",
   },
   {
     id: "branch",
@@ -33,7 +34,7 @@ const PIPELINE_STEPS = [
   {
     id: "sms",
     title: "4. SMS follow-up",
-    body: "After wait-after-call hours, Twilio sends your SMS template ({{first_name}}). Reply → sequence stops as engaged. No reply → wait-after-SMS hours, then email.",
+    body: "After wait-after-call hours, your connected phone provider sends your SMS template ({{first_name}}). Reply → sequence stops as engaged. No reply → wait-after-SMS hours, then email.",
   },
   {
     id: "email",
@@ -247,14 +248,15 @@ function HowSdrWorksModal({ open, onClose, onNavigate }) {
   );
 }
 
-function TwilioSetupModal({ open, onClose }) {
+function PhoneSetupModal({ open, onClose, onChanged }) {
+  const [tab, setTab] = useState("twilio");
   if (!open) return null;
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="twilio-setup-title"
+      aria-labelledby="phone-setup-title"
       style={{
         position: "fixed",
         inset: 0,
@@ -283,11 +285,12 @@ function TwilioSetupModal({ open, onClose }) {
       >
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
           <div>
-            <div id="twilio-setup-title" style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>
-              Phone & SMS (Twilio)
+            <div id="phone-setup-title" style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>
+              Phone & SMS
             </div>
             <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.55, margin: 0 }}>
-              Connect with Account SID + Auth Token, then pick or buy a number for outbound AI calls and SMS follow-ups.
+              Connect Twilio or Telnyx (or both). Only one is active for outbound calls and SMS — pick which
+              provider to use after assigning a number.
             </p>
           </div>
           <button
@@ -309,7 +312,45 @@ function TwilioSetupModal({ open, onClose }) {
           </button>
         </div>
 
-        <TwilioByotCard />
+        <div
+          style={{
+            display: "flex",
+            gap: 0,
+            marginBottom: 16,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          {[
+            ["twilio", "Twilio"],
+            ["telnyx", "Telnyx"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              style={{
+                flex: 1,
+                padding: "10px 0",
+                fontSize: 12,
+                fontWeight: 600,
+                border: "none",
+                cursor: "pointer",
+                background: tab === key ? COLORS.orange : "transparent",
+                color: tab === key ? "#fff" : COLORS.textMuted,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "twilio" ? (
+          <TwilioByotCard onChanged={onChanged} />
+        ) : (
+          <TelnyxByotCard onChanged={onChanged} />
+        )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
           <button type="button" style={{ ...S.btn("ghost"), padding: "8px 14px", fontSize: 12 }} onClick={onClose}>
@@ -322,28 +363,57 @@ function TwilioSetupModal({ open, onClose }) {
 }
 
 /**
- * SDR Setup — channels (Twilio, Gmail, Calendar) + booking rules + links to agent content.
+ * SDR Setup — channels (Twilio/Telnyx, Gmail, Calendar) + booking rules + links to agent content.
  */
 export default function SDRSetupPage() {
   const navigate = useNavigate();
   const [howOpen, setHowOpen] = useState(false);
-  const [twilioOpen, setTwilioOpen] = useState(false);
-  const [twilioStatus, setTwilioStatus] = useState(null);
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const [phoneStatus, setPhoneStatus] = useState(null);
   const [gmailStatus, setGmailStatus] = useState(null);
   const [calendarStatus, setCalendarStatus] = useState(null);
+  const [statusTick, setStatusTick] = useState(0);
+
+  const refreshPhoneStatus = () => {
+    const token = localStorage.getItem("catalyst_token");
+    if (!token) return;
+    Promise.all([
+      fetch("/api/twilio/status", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
+      fetch("/api/telnyx/status", { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json()),
+    ])
+      .then(([twilio, telnyx]) => {
+        const twilioReady = !!(twilio?.connected && twilio?.phoneNumber);
+        const telnyxReady = !!(telnyx?.connected && telnyx?.phoneNumber);
+        const active =
+          telnyx?.active && telnyxReady
+            ? "telnyx"
+            : twilio?.active && twilioReady
+              ? "twilio"
+              : telnyxReady
+                ? "telnyx"
+                : twilioReady
+                  ? "twilio"
+                  : null;
+        const phoneNumber =
+          active === "telnyx" ? telnyx.phoneNumber : active === "twilio" ? twilio.phoneNumber : null;
+        setPhoneStatus({
+          connected: twilioReady || telnyxReady,
+          active,
+          phoneNumber,
+          twilio,
+          telnyx,
+        });
+      })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     const token = localStorage.getItem("catalyst_token");
     if (!token) return;
-    fetch("/api/twilio/status", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json())
-      .then(setTwilioStatus)
-      .catch(() => {});
+    refreshPhoneStatus();
     gmailApi.status().then(setGmailStatus).catch(() => {});
     calendarApi.status().then(setCalendarStatus).catch(() => {});
-  }, [twilioOpen]);
+  }, [phoneOpen, statusTick]);
 
   useEffect(() => {
     const id = window.location.hash.replace("#", "");
@@ -354,9 +424,17 @@ export default function SDRSetupPage() {
 
   const calendarConn = calendarStatus?.connections?.find((c) => c.provider === calendarStatus?.activeProvider);
   const calendarOk = !!calendarStatus?.activeProvider;
-  const phoneOk = !!twilioStatus?.connected;
+  const phoneOk = !!phoneStatus?.connected;
   const mailOk = !!gmailStatus?.connected;
   const readyCount = [phoneOk, mailOk, calendarOk].filter(Boolean).length;
+
+  const phoneLabel = (() => {
+    if (!phoneOk) return "Connect Twilio or Telnyx and assign a number";
+    const provider = phoneStatus.active === "telnyx" ? "Telnyx" : "Twilio";
+    return phoneStatus.phoneNumber
+      ? `${provider} · ${phoneStatus.phoneNumber}`
+      : `${provider} connected`;
+  })();
 
   return (
     <div className="sdr-setup">
@@ -382,18 +460,18 @@ export default function SDRSetupPage() {
       <AgentStack />
 
       <HowSdrWorksModal open={howOpen} onClose={() => setHowOpen(false)} onNavigate={navigate} />
-      <TwilioSetupModal open={twilioOpen} onClose={() => setTwilioOpen(false)} />
+      <PhoneSetupModal
+        open={phoneOpen}
+        onClose={() => setPhoneOpen(false)}
+        onChanged={() => setStatusTick((n) => n + 1)}
+      />
 
       <div className="sdr-setup-board" aria-label="Channel status">
-        <button type="button" className="sdr-setup-channel sdr-setup-channel--phone" onClick={() => setTwilioOpen(true)}>
+        <button type="button" className="sdr-setup-channel sdr-setup-channel--phone" onClick={() => setPhoneOpen(true)}>
           <div className="sdr-setup-channel-kind">Phone</div>
           <div className="sdr-setup-channel-copy">
             <strong>Calls & SMS</strong>
-            <p>
-              {phoneOk
-                ? twilioStatus.phoneNumber || "Twilio connected"
-                : "Connect Twilio and assign a number"}
-            </p>
+            <p>{phoneLabel}</p>
           </div>
           <StatusPill ok={phoneOk} />
         </button>

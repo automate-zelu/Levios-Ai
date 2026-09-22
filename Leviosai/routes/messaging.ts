@@ -5,7 +5,7 @@ import { requireAuth } from "./auth.js";
 import { db } from "../lib/db.js";
 import { workspaces, sdrCallSessions } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
-import { getClientForWorkspace } from "../lib/twilio-subaccount.js";
+import { sendOutboundSms, workspacePhoneConnected, workspaceFromNumber, placeOutboundCall, resolveVoiceProvider } from "../lib/telephony.js";
 import { liveCallRegistry } from "../lib/calling/live-call-registry.js";
 
 const router = Router();
@@ -33,20 +33,14 @@ router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Respons
 
     let deliveryResult: { success: boolean; sid?: string; error?: string } = {
       success: false,
-      error: "Twilio not connected — add credentials on the Twilio page",
+      error: "Phone/SMS not connected — add Twilio or Telnyx in SDR Setup",
     };
 
-    // Use workspace BYOT Twilio credentials
     const ws = await getWorkspaceForOrg(req.organizationId);
-    if (ws?.twilioSubAccountSid && ws?.twilioPhoneNumber) {
+    if (ws && workspacePhoneConnected(ws)) {
       try {
-        const { client } = getClientForWorkspace(ws);
-        const msg = await client.messages.create({
-          body: message,
-          from: ws.twilioPhoneNumber,
-          to: lead.phone,
-        });
-        deliveryResult = { success: true, sid: msg.sid };
+        const sent = await sendOutboundSms(ws, { to: lead.phone, body: message });
+        deliveryResult = { success: true, sid: sent.sid };
       } catch (err: any) {
         deliveryResult = { success: false, error: err.message };
       }
@@ -56,7 +50,7 @@ router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Respons
       leadId: parseInt(req.params.id),
       channel: "sms",
       content: message,
-      status: deliveryResult.success ? "sent" : (ws?.twilioSubAccountSid ? "failed" : "pending"),
+      status: deliveryResult.success ? "sent" : (workspacePhoneConnected(ws || {}) ? "failed" : "pending"),
       direction: "outbound",
       aiGenerated: req.body.aiGenerated || false,
     });
@@ -72,7 +66,9 @@ router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Respons
     res.status(201).json({
       message: msg,
       delivery: deliveryResult,
-      twilioConfigured: !!(ws?.twilioSubAccountSid && ws?.twilioPhoneNumber),
+      twilioConfigured: workspacePhoneConnected(ws || {}),
+      phoneConfigured: workspacePhoneConnected(ws || {}),
+      fromNumber: workspaceFromNumber(ws || {}),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -126,9 +122,7 @@ router.post("/api/leads/:id/email", requireAuth, async (req: Request, res: Respo
 });
 
 // ─── POST /api/leads/:id/call ─────────────────────────────────────────────────
-// Initiates a manual AI call using the workspace's BYOT Twilio credentials.
-// Creates a call session so the full AI pipeline (Deepgram+GPT-4o+ElevenLabs)
-// handles the conversation using the workspace's SDR config.
+// Initiates a manual AI call using the workspace's BYOT Twilio or Telnyx stack.
 
 router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Response) => {
   try {
@@ -137,14 +131,13 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
     if (!lead.phone) return res.status(400).json({ error: "Lead has no phone number" });
 
     const ws = await getWorkspaceForOrg(req.organizationId);
-    if (!ws?.twilioSubAccountSid || !ws?.twilioPhoneNumber) {
-      return res.status(400).json({ error: "Twilio not connected — add credentials on the Twilio page" });
+    if (!ws || !workspacePhoneConnected(ws)) {
+      return res.status(400).json({ error: "Phone not connected — add Twilio or Telnyx in SDR Setup" });
     }
 
     const baseUrl = process.env.BASE_URL;
     if (!baseUrl) return res.status(500).json({ error: "BASE_URL env var not set" });
 
-    // Create a call session — no enrollmentId (manual call, not SDR sequence)
     const [session] = await db
       .insert(sdrCallSessions)
       .values({
@@ -155,24 +148,19 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
       })
       .returning();
 
-    // Place call — TwiML URL includes session ID so the AI pipeline handles it
-    const { client, fromNumber } = getClientForWorkspace(ws);
-    const call = await client.calls.create({
-      to:   lead.phone,
-      from: fromNumber!,
-      url:  `${baseUrl}/api/call/connect/${session.id}`,
-      statusCallback:       `${baseUrl}/api/call/status/${session.id}`,
-      statusCallbackMethod: "POST",
-      statusCallbackEvent:  ["initiated", "ringing", "answered", "completed"],
+    const placed = await placeOutboundCall(ws, {
+      to: lead.phone,
+      connectUrl: `${baseUrl}/api/call/connect/${session.id}`,
+      statusCallback: `${baseUrl}/api/call/status/${session.id}`,
+      recordingStatusCallback: `${baseUrl}/api/call/recording/${session.id}`,
+      record: true,
     });
 
-    // Store Twilio call SID
     await db
       .update(sdrCallSessions)
-      .set({ twilioCallSid: call.sid })
+      .set({ twilioCallSid: placed.sid })
       .where(eq(sdrCallSessions.id, session.id));
 
-    // Appear on Live Calls page while ringing (before media stream opens)
     liveCallRegistry.start(session.id, ws.id, []);
     liveCallRegistry.setStatus(session.id, "initiated");
 
@@ -180,13 +168,14 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
       entityType: "lead",
       entityId: parseInt(req.params.id),
       action: "call_initiated",
-      details: `Manual AI call to ${lead.phone} (session ${session.id})`,
+      details: `Manual AI call (${placed.provider}) to ${lead.phone} (session ${session.id})`,
       organizationId: req.organizationId,
     });
 
     res.json({
-      call: { success: true, sid: call.sid, sessionId: session.id },
+      call: { success: true, sid: placed.sid, sessionId: session.id, provider: placed.provider },
       twilioConfigured: true,
+      phoneConfigured: true,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -200,6 +189,9 @@ router.get("/api/integrations/status", requireAuth, async (req: Request, res: Re
     const ws = await getWorkspaceForOrg(req.organizationId);
     res.json({
       twilio: !!(ws?.twilioSubAccountSid && ws?.twilioPhoneNumber),
+      telnyx: !!(ws?.telnyxApiKey && ws?.telnyxPhoneNumber),
+      phone: workspacePhoneConnected(ws || {}),
+      activeProvider: resolveVoiceProvider(ws || {}),
       resend: isResendConfigured(),
     });
   } catch (error: any) {

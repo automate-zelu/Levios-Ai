@@ -455,7 +455,7 @@ router.get("/api/activity", requireAuth, async (req, res) => {
 // HTTP 200 = at least DB is up; 503 = DB down (Railway restarts the pod).
 
 router.get("/api/health", async (_req, res) => {
-  const services: Record<string, "ok" | "error" | "unconfigured"> = {};
+  const services: Record<string, "ok" | "error" | "unconfigured" | "byot"> = {};
   let dbOk = false;
 
   // ── Database ──
@@ -479,8 +479,9 @@ router.get("/api/health", async (_req, res) => {
     services.redis = "error";
   }
 
-  // ── Twilio (BYOT — per workspace; platform does not use env Twilio) ──
+  // ── Voice providers (BYOT — per workspace) ──
   services.twilio = "byot";
+  services.telnyx = "byot";
 
   // ── AI services ──
   services.deepgram   = process.env.DEEPGRAM_API_KEY   ? "ok" : "unconfigured";

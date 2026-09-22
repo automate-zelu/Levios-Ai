@@ -47,6 +47,13 @@ import {
 } from "./pipeline-helpers.js";
 import { buildLeadContextBlock } from "./lead-context.js";
 import {
+  buildClearFrame,
+  buildOutboundMediaFrame,
+  detectMediaStreamProvider,
+  extractStreamId,
+  type MediaStreamProvider,
+} from "./media-stream-protocol.js";
+import {
   clearSayFallbackRedirect,
   isSayFallbackRedirect,
   playTextViaTwilioSay,
@@ -71,6 +78,7 @@ export class AudioPipeline {
   private agent       = new LangChainCallAgent();
   private transcript  = new TranscriptStore();
   private streamSid   = "";
+  private mediaProvider: MediaStreamProvider = "twilio";
   private ended       = false;
   private isSpeaking  = false;
   private activeResponse: Promise<void> | null = null;
@@ -241,8 +249,11 @@ export class AudioPipeline {
           break;
 
         case "start":
-          this.streamSid = msg.start?.streamSid ?? "";
-          console.log(`📞 Twilio stream started — streamSid: ${this.streamSid}`);
+          this.mediaProvider = detectMediaStreamProvider(msg);
+          this.streamSid = extractStreamId(msg);
+          console.log(
+            `📞 Media stream started (${this.mediaProvider}) — streamSid: ${this.streamSid}`
+          );
           await db
             .update(sdrCallSessions)
             .set({ twilioStreamSid: this.streamSid, status: "active" })
@@ -369,7 +380,7 @@ export class AudioPipeline {
 
   private clearTwilioAudio(ws: WebSocket): void {
     if (ws.readyState === ws.OPEN && this.streamSid) {
-      ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
+      ws.send(buildClearFrame(this.mediaProvider, this.streamSid));
     }
   }
 
@@ -625,11 +636,11 @@ export class AudioPipeline {
           const frame = pending.subarray(0, TWILIO_MULAW_FRAME_BYTES);
           pending = pending.subarray(TWILIO_MULAW_FRAME_BYTES);
           ws.send(
-            JSON.stringify({
-              event: "media",
-              streamSid: this.streamSid,
-              media: { payload: frame.toString("base64") },
-            })
+            buildOutboundMediaFrame(
+              this.mediaProvider,
+              this.streamSid,
+              frame.toString("base64")
+            )
           );
           sent += frame.length;
           await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
@@ -642,11 +653,11 @@ export class AudioPipeline {
           Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - pending.length, 0xff),
         ]);
         ws.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.streamSid,
-            media: { payload: payload.toString("base64") },
-          })
+          buildOutboundMediaFrame(
+            this.mediaProvider,
+            this.streamSid,
+            payload.toString("base64")
+          )
         );
         sent += payload.length;
       }
@@ -659,21 +670,25 @@ export class AudioPipeline {
     }
 
     console.log(
-      `🔊 Sent ${sent} μ-law bytes to Twilio (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
+      `🔊 Sent ${sent} μ-law bytes to ${this.mediaProvider} (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
     );
 
     if (!aborted && ws.readyState === ws.OPEN && this.streamSid) {
-      ws.send(
-        JSON.stringify({
-          event: "mark",
-          streamSid: this.streamSid,
-          mark: { name: "tts-done" },
-        })
-      );
+      if (this.mediaProvider === "telnyx") {
+        ws.send(JSON.stringify({ event: "mark", mark: { name: "tts-done" } }));
+      } else {
+        ws.send(
+          JSON.stringify({
+            event: "mark",
+            streamSid: this.streamSid,
+            mark: { name: "tts-done" },
+          })
+        );
+      }
     }
 
     if (!aborted && sent < 2000) {
-      await this.fallbackToTwilioSay(sessionId, text, `Only ${sent} bytes reached Twilio`);
+      await this.fallbackToTwilioSay(sessionId, text, `Only ${sent} bytes reached media stream`);
     }
   }
 
@@ -692,17 +707,17 @@ export class AudioPipeline {
           ? frame
           : Buffer.concat([frame, Buffer.alloc(TWILIO_MULAW_FRAME_BYTES - frame.length, 0xff)]);
       ws.send(
-        JSON.stringify({
-          event: "media",
-          streamSid: this.streamSid,
-          media: { payload: payload.toString("base64") },
-        })
+        buildOutboundMediaFrame(
+          this.mediaProvider,
+          this.streamSid,
+          payload.toString("base64")
+        )
       );
       sent += payload.length;
       await new Promise((r) => setTimeout(r, TWILIO_MEDIA_FRAME_MS));
     }
     console.log(
-      `🔊 Sent ${sent} μ-law bytes (buffered) to Twilio (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
+      `🔊 Sent ${sent} μ-law bytes (buffered) to ${this.mediaProvider} (~${(sent / 8000).toFixed(2)}s) session=${sessionId}`
     );
   }
 

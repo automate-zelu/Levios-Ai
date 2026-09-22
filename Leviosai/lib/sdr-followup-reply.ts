@@ -9,7 +9,7 @@ import { sdrEnrollments, sdrLogs, workspaces, organizations } from "./schema.js"
 import type { EnrollmentStatus } from "./schema.js";
 import { eq } from "drizzle-orm";
 import { stateMachine } from "./sdr-state-machine.js";
-import { getClientForWorkspace } from "./twilio-subaccount.js";
+import { sendOutboundSms } from "./telephony.js";
 import { sendEmailViaGmail } from "./gmail/send.js";
 import { storage } from "./storage.js";
 import {
@@ -672,21 +672,15 @@ export async function handleSdrSmsConversation(opts: {
     });
   }
 
-  // Send conversational reply via Twilio
+  // Send conversational reply via workspace BYOT provider
   let sent = false;
   let error: string | undefined;
   try {
     const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, opts.workspaceId));
     if (!ws) throw new Error("Workspace not found");
-    const { client, fromNumber } = getClientForWorkspace(ws);
-    if (!fromNumber) throw new Error("No Twilio number on workspace");
     if (!opts.lead.phone) throw new Error("Lead has no phone");
 
-    await client.messages.create({
-      body: reply,
-      from: fromNumber,
-      to: opts.lead.phone,
-    });
+    const delivered = await sendOutboundSms(ws, { to: opts.lead.phone, body: reply });
     sent = true;
 
     await storage.createLeadMessage({
@@ -705,7 +699,15 @@ export async function handleSdrSmsConversation(opts: {
       step: enrollment.currentStep,
       stepName: "sms_ai_reply",
       outcome: intent,
-      payload: { channel: "sms", direction: "outbound", body: reply, intent, to: opts.lead.phone, from: fromNumber },
+      payload: {
+        channel: "sms",
+        direction: "outbound",
+        body: reply,
+        intent,
+        to: opts.lead.phone,
+        from: delivered.from,
+        provider: delivered.provider,
+      },
       loggedAt: new Date(),
     });
   } catch (err: any) {

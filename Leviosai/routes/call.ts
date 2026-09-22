@@ -77,21 +77,38 @@ router.post("/api/call/connect/:sessionId", validateTwilioCallSession, async (re
   const sessionId = req.params.sessionId as string;
   const baseUrl   = process.env.BASE_URL ?? `https://${req.hostname}`;
 
-  // Twilio fetches this TwiML when the far end "answers" — including voicemail.
+  // Provider fetches this when the far end answers — including voicemail.
   // Do NOT mark call_connected here. That waits until the lead actually speaks.
 
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const twiml = new VoiceResponse();
-  const connect = twiml.connect();
+  let provider: "twilio" | "telnyx" = "twilio";
+  try {
+    const [session] = await db
+      .select({ workspaceId: sdrCallSessions.workspaceId })
+      .from(sdrCallSessions)
+      .where(eq(sdrCallSessions.id, sessionId))
+      .limit(1);
+    if (session) {
+      const [ws] = await db
+        .select({
+          voiceProvider: workspaces.voiceProvider,
+          telnyxApiKey: workspaces.telnyxApiKey,
+          twilioSubAuthToken: workspaces.twilioSubAuthToken,
+        })
+        .from(workspaces)
+        .where(eq(workspaces.id, session.workspaceId))
+        .limit(1);
+      if (ws?.voiceProvider === "telnyx" || (ws?.telnyxApiKey && !ws?.twilioSubAuthToken)) {
+        provider = "telnyx";
+      }
+    }
+  } catch {
+    // default twilio XML
+  }
 
-  // Connect/Stream is bidirectional for sending audio back; track must be inbound_track only
-  // (Twilio 31941 if both_tracks is used with <Connect>).
-  connect.stream({
-    url:   `wss://${new URL(baseUrl).hostname}/api/call/stream/${sessionId}`,
-    track: "inbound_track",
-  });
-
-  res.type("text/xml").send(twiml.toString());
+  const { buildConnectStreamXml } = await import("../lib/calling/media-stream-protocol.js");
+  const streamUrl = `wss://${new URL(baseUrl).hostname}/api/call/stream/${sessionId}`;
+  const xml = buildConnectStreamXml({ provider, streamUrl });
+  res.type("text/xml").send(xml);
 });
 
 // ─── WS /api/call/stream/:sessionId ──────────────────────────────────────────

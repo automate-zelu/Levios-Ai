@@ -54,10 +54,10 @@ describe("ops Twilio provision failure email", () => {
     }
   });
 
-  it("wires Stripe activate path to provision + ops notify", () => {
+  it("documents BYOT Twilio (no auto-provision on Stripe activate)", () => {
     const src = readFileSync(path.join(root, "lib/stripe.ts"), "utf8");
-    assert.match(src, /provisionWorkspace/);
-    assert.match(src, /notifyTwilioProvisionFailed/);
+    assert.match(src, /BYOT/);
+    assert.doesNotMatch(src, /provisionWorkspace\(/);
     assert.ok(existsSync(path.join(root, "lib/ops-alerts.ts")));
   });
 });

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db.js";
 import { workspaces } from "./schema.js";
 import { storage } from "./storage.js";
-import { getClientForWorkspace } from "./twilio-subaccount.js";
+import { sendOutboundSms, workspacePhoneConnected } from "./telephony.js";
 import { sendEmailViaGmail } from "./gmail/send.js";
 import { styledPlainEmail } from "./email-templates.js";
 
@@ -31,13 +31,11 @@ export async function notifyLeadBookingChange(input: BookingNotifyInput): Promis
         .select()
         .from(workspaces)
         .where(eq(workspaces.organizationId, input.organizationId));
-      if (!ws?.twilioSubAccountSid || !ws?.twilioPhoneNumber) {
-        errors.sms = "Twilio not connected";
+      if (!workspacePhoneConnected(ws || {})) {
+        errors.sms = "Phone/SMS not connected";
       } else {
-        const { client } = getClientForWorkspace(ws);
-        await client.messages.create({
+        await sendOutboundSms(ws!, {
           body: input.sms,
-          from: ws.twilioPhoneNumber,
           to: input.phone,
         });
         smsOk = true;

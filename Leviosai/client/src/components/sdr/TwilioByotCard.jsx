@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { COLORS, S } from "../../theme.js";
 
-export default function TwilioByotCard() {
+export default function TwilioByotCard({ onChanged } = {}) {
   const [status, setStatus]           = useState(null);   // { connected, phoneNumber, accountSidMasked }
   const [sid, setSid]                 = useState("");
   const [token, setToken]             = useState("");
@@ -22,6 +22,11 @@ export default function TwilioByotCard() {
   const [testPhone, setTestPhone]     = useState("");
   const [testBusy, setTestBusy]       = useState(false);
   const [testResult, setTestResult]   = useState(null);
+  const [activating, setActivating]   = useState(false);
+
+  const notify = () => {
+    if (typeof onChanged === "function") onChanged();
+  };
 
   const req = (path, opts = {}) =>
     fetch(path, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("catalyst_token")}`, ...(opts.headers || {}) } });
@@ -57,6 +62,7 @@ export default function TwilioByotCard() {
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Connection failed"); return; }
       setStatus(data); setSid(""); setToken("");
+      notify();
     } catch (e) { setError(e.message); }
     finally { setConnecting(false); }
   };
@@ -67,6 +73,19 @@ export default function TwilioByotCard() {
     setStatus({ connected: false, phoneNumber: null, accountSidMasked: null });
     setExistingNums(null); setResults(null); setSelected(null);
     setFilters({ areaCode: "", contains: "", inRegion: "", inPostalCode: "" });
+    notify();
+  };
+
+  const handleActivate = async () => {
+    setActivating(true); setError("");
+    try {
+      const res = await req("/api/twilio/activate", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to activate Twilio");
+      setStatus(prev => ({ ...prev, active: true }));
+      notify();
+    } catch (e) { setError(e.message); }
+    finally { setActivating(false); }
   };
 
   const handleUseExisting = async (num) => {
@@ -77,6 +96,7 @@ export default function TwilioByotCard() {
       if (!res.ok) { setError(data.error || "Failed to activate number"); return; }
       setStatus(prev => ({ ...prev, phoneNumber: data.phoneNumber }));
       setExistingNums(prev => prev?.map(n => ({ ...n, inUse: n.sid === num.sid })));
+      notify();
     } catch (e) { setError(e.message); }
     finally { setUsingNum(null); }
   };
@@ -103,6 +123,7 @@ export default function TwilioByotCard() {
       if (!res.ok) { setError(data.error || "Purchase failed"); return; }
       setStatus(prev => ({ ...prev, phoneNumber: data.phoneNumber }));
       setResults(null); setSelected(null); setFilters({ areaCode: "", contains: "", inRegion: "", inPostalCode: "" });
+      notify();
     } catch (e) { setError(e.message); }
     finally { setPurchasing(false); }
   };
@@ -217,6 +238,19 @@ export default function TwilioByotCard() {
           {status.connected
             ? <span style={S.badge(COLORS.green)}>✓ Connected</span>
             : <span style={{ fontSize: 11, color: COLORS.textDim }}>Not connected</span>}
+          {status.connected && status.active && (
+            <span style={S.badge(COLORS.teal)}>Active provider</span>
+          )}
+          {status.connected && status.phoneNumber && !status.active && (
+            <button
+              type="button"
+              style={{ ...S.btn("secondary"), padding: "5px 10px", fontSize: 11 }}
+              onClick={handleActivate}
+              disabled={activating}
+            >
+              {activating ? "…" : "Use Twilio"}
+            </button>
+          )}
           {status.connected && status.phoneNumber && (
             <button
               type="button"

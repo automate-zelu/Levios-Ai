@@ -36,6 +36,7 @@ router.get("/api/twilio/status", async (req: Request, res: Response) => {
     const connected = !!(ws.twilioSubAccountSid && ws.twilioSubAuthToken);
     res.json({
       connected,
+      active: ws.voiceProvider === "twilio" || (!ws.voiceProvider && connected && !!ws.twilioPhoneNumber),
       phoneNumber:    ws.twilioPhoneNumber ?? null,
       accountSidMasked: connected
         ? decrypt(ws.twilioSubAccountSid!).slice(0, 4) + "••••••••••••••••••••••••••••" + decrypt(ws.twilioSubAccountSid!).slice(-4)
@@ -67,11 +68,13 @@ router.post("/api/twilio/connect", async (req: Request, res: Response) => {
     await db.update(workspaces).set({
       twilioSubAccountSid: encrypt(accountSid),
       twilioSubAuthToken:  encrypt(authToken),
+      voiceProvider: "twilio",
       updatedAt: new Date(),
     }).where(eq(workspaces.id, ws.id));
 
     res.json({
       connected: true,
+      active: true,
       accountSidMasked: accountSid.slice(0, 4) + "••••••••••••••••••••••••••••" + accountSid.slice(-4),
     });
   } catch (err: any) {
@@ -96,6 +99,7 @@ router.delete("/api/twilio/connect", async (req: Request, res: Response) => {
       twilioSubAuthToken:  null,
       twilioPhoneNumber:   null,
       twilioPhoneSid:      null,
+      voiceProvider: ws.voiceProvider === "twilio" ? (ws.telnyxApiKey ? "telnyx" : null) : ws.voiceProvider,
       updatedAt: new Date(),
     }).where(eq(workspaces.id, ws.id));
 
@@ -167,10 +171,33 @@ router.post("/api/twilio/numbers/use", async (req: Request, res: Response) => {
     await db.update(workspaces).set({
       twilioPhoneNumber: phoneNumber,
       twilioPhoneSid:    phoneSid,
+      voiceProvider: "twilio",
       updatedAt: new Date(),
     }).where(eq(workspaces.id, ws.id));
 
     res.json({ phoneNumber, phoneSid });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/twilio/activate ────────────────────────────────────────────────
+// Prefer Twilio over Telnyx when both are connected.
+
+router.post("/api/twilio/activate", async (req: Request, res: Response) => {
+  try {
+    const ws = await getWorkspace((req as any).workspaceId);
+    if (!ws) return res.status(404).json({ error: "Workspace not found" });
+    if (!ws.twilioSubAccountSid || !ws.twilioSubAuthToken || !ws.twilioPhoneNumber) {
+      return res.status(400).json({
+        error: "Connect Twilio and assign a phone number first",
+      });
+    }
+    await db
+      .update(workspaces)
+      .set({ voiceProvider: "twilio", updatedAt: new Date() })
+      .where(eq(workspaces.id, ws.id));
+    res.json({ active: true, provider: "twilio" });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -265,6 +292,7 @@ router.post("/api/twilio/numbers/purchase", async (req: Request, res: Response) 
     await db.update(workspaces).set({
       twilioPhoneNumber: purchased.phoneNumber,
       twilioPhoneSid:    purchased.sid,
+      voiceProvider: "twilio",
       updatedAt: new Date(),
     }).where(eq(workspaces.id, ws.id));
 

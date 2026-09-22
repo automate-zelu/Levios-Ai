@@ -7,6 +7,7 @@
 // Multi-tenant BYOT handling:
 //   - SMS / status webhooks: look up workspace by To/From phone → workspace auth token
 //   - Call-session webhooks: resolve token via session → workspace
+//   - Telnyx TeXML: session UUID gate (no Twilio HMAC) — resolver returns __TELNYX_SESSION__
 //   - No platform TWILIO_* env fallback (every workspace brings its own Twilio)
 //
 // Validation is skipped in development (localhost) because Twilio signs against
@@ -19,9 +20,7 @@ import { workspaces } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
 import { decrypt } from "../lib/crypto.js";
 
-// ─── SKIP IN DEVELOPMENT ──────────────────────────────────────────────────────
-// Twilio signs against the publicly accessible URL. During local dev the
-// signature won't match, so we skip validation to avoid blocking all webhooks.
+const TELNYX_SESSION_TOKEN = "__TELNYX_SESSION__";
 
 function isDev(): boolean {
   const base = process.env.BASE_URL ?? "";
@@ -31,10 +30,6 @@ function isDev(): boolean {
     base.includes("127.0.0.1")
   );
 }
-
-// ─── RESOLVE AUTH TOKEN BY WORKSPACE PHONE NUMBER ────────────────────────────
-// SMS webhooks carry the destination phone number in `To`. We use it to find
-// the workspace and get their (decrypted) Twilio auth token.
 
 function digitsOf(phone: string): string {
   const d = (phone || "").replace(/\D/g, "");
@@ -102,10 +97,6 @@ function candidateWebhookUrls(req: Request): string[] {
   ]);
 }
 
-// ─── RESOLVE AUTH TOKEN BY CALL SESSION ──────────────────────────────────────
-// Call-status / recording webhooks carry the session ID in the URL.
-// We look up the session → workspace → auth token.
-
 async function resolveAuthTokenBySession(sessionId: string): Promise<string | null> {
   try {
     const { sdrCallSessions } = await import("../lib/schema.js");
@@ -118,46 +109,56 @@ async function resolveAuthTokenBySession(sessionId: string): Promise<string | nu
     if (!session) return null;
 
     const [ws] = await db
-      .select({ twilioSubAuthToken: workspaces.twilioSubAuthToken })
+      .select({
+        twilioSubAuthToken: workspaces.twilioSubAuthToken,
+        voiceProvider: workspaces.voiceProvider,
+        telnyxApiKey: workspaces.telnyxApiKey,
+      })
       .from(workspaces)
       .where(eq(workspaces.id, session.workspaceId))
       .limit(1);
+
+    // Telnyx TeXML callbacks are not Twilio-HMAC signed — session UUID is the gate.
+    if (ws?.voiceProvider === "telnyx" || (ws?.telnyxApiKey && !ws?.twilioSubAuthToken)) {
+      return TELNYX_SESSION_TOKEN;
+    }
 
     if (ws?.twilioSubAuthToken) {
       return decrypt(ws.twilioSubAuthToken);
     }
   } catch {
-    // Fall back to env var
+    // no fallback
   }
   return null;
 }
-
-// ─── MIDDLEWARE FACTORY ───────────────────────────────────────────────────────
-// `resolver` is an async fn(req) → authToken | null.
-// If null is returned we fall back to the env var token, then validate.
-// If no token is found at all, validation is skipped with a warning.
 
 export function twilioSignatureMiddleware(
   resolver?: (req: Request) => Promise<string | null>
 ) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (isDev()) {
-      return next(); // Skip in development
-    }
-
-    const signature = req.headers["x-twilio-signature"] as string | undefined;
-    if (!signature) {
-      res.status(403).json({ error: "Missing X-Twilio-Signature header" });
-      return;
+      return next();
     }
 
     const urls = candidateWebhookUrls(req);
-
     const tokens = uniqueNonEmpty([resolver ? await resolver(req) : null]);
 
     if (tokens.length === 0) {
       console.warn("Twilio signature validation: no workspace auth token — rejecting");
       res.status(403).json({ error: "No workspace Twilio credentials for this webhook" });
+      return;
+    }
+
+    const isTelnyxSession = tokens.includes(TELNYX_SESSION_TOKEN);
+    const signature = req.headers["x-twilio-signature"] as string | undefined;
+
+    // Telnyx TeXML / status callbacks omit Twilio HMAC — session UUID already verified.
+    if (isTelnyxSession) {
+      return next();
+    }
+
+    if (!signature) {
+      res.status(403).json({ error: "Missing X-Twilio-Signature header" });
       return;
     }
 
@@ -182,8 +183,6 @@ export function twilioSignatureMiddleware(
     next();
   };
 }
-
-// ─── NAMED PRESETS ────────────────────────────────────────────────────────────
 
 /** For SMS webhooks — resolves token by `req.body.To` (workspace phone number). */
 export const validateTwilioSms = twilioSignatureMiddleware(

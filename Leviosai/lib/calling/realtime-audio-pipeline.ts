@@ -30,6 +30,13 @@ import {
   trackStreamOpen,
 } from "./tts-fallback.js";
 import { LangChainCallAgent } from "./langchain-agent.js";
+import {
+  buildClearFrame,
+  buildOutboundMediaFrame,
+  detectMediaStreamProvider,
+  extractStreamId,
+  type MediaStreamProvider,
+} from "./media-stream-protocol.js";
 
 export { useOpenAiRealtimeVoice };
 
@@ -52,6 +59,7 @@ const VOICE_STYLE = `
 export class RealtimeAudioPipeline {
   private transcript = new TranscriptStore();
   private streamSid = "";
+  private mediaProvider: MediaStreamProvider = "twilio";
   private ended = false;
   private suppressEndOnClose = false;
   private realtime: OpenAIRealtimeSession | null = null;
@@ -193,20 +201,14 @@ export class RealtimeAudioPipeline {
         this.appendLive(sessionId, "ai", text);
       },
       onBargeIn: () => {
-        // Only after confirmed user interruption — clear Twilio's queued agent audio
+        // Only after confirmed user interruption — clear queued agent audio
         if (ws.readyState === ws.OPEN && this.streamSid) {
-          ws.send(JSON.stringify({ event: "clear", streamSid: this.streamSid }));
+          ws.send(buildClearFrame(this.mediaProvider, this.streamSid));
         }
       },
       onAudioDelta: (b64) => {
         if (this.ended || ws.readyState !== ws.OPEN || !this.streamSid) return;
-        ws.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.streamSid,
-            media: { payload: b64 },
-          })
-        );
+        ws.send(buildOutboundMediaFrame(this.mediaProvider, this.streamSid, b64));
       },
       onError: (err) => console.error(`Realtime session error ${sessionId}:`, err.message),
     });
@@ -225,8 +227,11 @@ export class RealtimeAudioPipeline {
           break;
 
         case "start":
-          this.streamSid = msg.start?.streamSid ?? "";
-          console.log(`📞 Twilio stream (realtime) streamSid=${this.streamSid}`);
+          this.mediaProvider = detectMediaStreamProvider(msg);
+          this.streamSid = extractStreamId(msg);
+          console.log(
+            `📞 Media stream (realtime/${this.mediaProvider}) streamSid=${this.streamSid}`
+          );
           await db
             .update(sdrCallSessions)
             .set({ twilioStreamSid: this.streamSid, status: "active" })

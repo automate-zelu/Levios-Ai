@@ -447,12 +447,18 @@ export const workspaces = pgTable("workspaces", {
   seatLimit:             integer("seat_limit").notNull().default(5),
   // isActive defaults false — Stripe webhook activates after successful subscription
   isActive:              boolean("is_active").notNull().default(false),
-  // Twilio sub-account — provisioned on subscription.created (see lib/twilio-subaccount.ts)
-  // Both SID and auth token are AES-256-CBC encrypted via lib/crypto.ts before storage.
+  // Twilio / Telnyx BYOT — credentials AES-256 encrypted via lib/crypto.ts
+  // voiceProvider selects which connected stack is active for calls/SMS.
+  voiceProvider:           text("voice_provider"), // "twilio" | "telnyx" | null
   twilioSubAccountSid:   text("twilio_sub_account_sid"),   // encrypted ACxxx
   twilioSubAuthToken:    text("twilio_sub_auth_token"),    // encrypted
   twilioPhoneNumber:     text("twilio_phone_number"),      // plain +15551234567
   twilioPhoneSid:        text("twilio_phone_sid"),         // PNxxx — used for release
+  telnyxApiKey:          text("telnyx_api_key"),           // encrypted
+  telnyxConnectionId:    text("telnyx_connection_id"),     // TeXML application / connection id
+  telnyxMessagingProfileId: text("telnyx_messaging_profile_id"),
+  telnyxPhoneNumber:     text("telnyx_phone_number"),
+  telnyxPhoneId:         text("telnyx_phone_id"),
   createdAt:             timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt:             timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

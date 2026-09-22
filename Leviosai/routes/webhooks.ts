@@ -125,6 +125,115 @@ router.post("/api/webhooks/twilio/sms", validateTwilioSms, async (req: Request, 
   }
 });
 
+// ─── Telnyx inbound SMS (Mission Control → Messaging Profile webhook) ─────────
+// Accepts Telnyx JSON event payloads (message.received) and TeXML-style form bodies.
+router.post("/api/webhooks/telnyx/sms", async (req: Request, res: Response) => {
+  try {
+    const payload = req.body?.data?.payload || req.body?.payload || req.body || {};
+    const From =
+      payload.from?.phone_number ||
+      payload.from?.phoneNumber ||
+      payload.From ||
+      payload.from ||
+      "";
+    const Body =
+      payload.text ||
+      payload.body ||
+      payload.Body ||
+      "";
+    const MessageSid =
+      payload.id ||
+      payload.message_id ||
+      payload.MessageSid ||
+      req.body?.data?.id ||
+      "";
+
+    if (!From || !Body) {
+      return res.sendStatus(200);
+    }
+
+    console.log(`📩 Inbound Telnyx SMS from ${From}: ${String(Body).substring(0, 50)}...`);
+
+    const lead = await storage.getLeadByPhone(From);
+
+    if (lead) {
+      await storage.createLeadMessage({
+        leadId: lead.id,
+        channel: "sms",
+        content: Body,
+        status: "delivered",
+        direction: "inbound",
+        aiGenerated: false,
+      });
+
+      const [smsEnrollment] = await db
+        .select()
+        .from(sdrEnrollments)
+        .where(and(
+          eq(sdrEnrollments.leadId, lead.id),
+          inArray(sdrEnrollments.status, [
+            "sms_sent",
+            "sms_replied",
+            "email_sent",
+            "email_replied",
+          ]),
+        ))
+        .orderBy(desc(sdrEnrollments.updatedAt))
+        .limit(1);
+
+      if (smsEnrollment) {
+        if (
+          (smsEnrollment.status === "sms_sent" || smsEnrollment.status === "email_sent") &&
+          smsEnrollment.bullmqJobId
+        ) {
+          await cancelJob(smsEnrollment.bullmqJobId);
+        }
+
+        const result = await handleSdrSmsConversation({
+          enrollmentId: smsEnrollment.id,
+          lead: {
+            id: lead.id,
+            firstName: lead.firstName,
+            phone: lead.phone,
+          },
+          workspaceId: smsEnrollment.workspaceId,
+          inboundText: Body,
+          fromPhone: From,
+        });
+
+        console.log(
+          `✅ SDR: Telnyx SMS conversation from ${From} — intent=${result.intent} sent=${result.sent} booked=${!!result.booked}`
+        );
+      }
+
+      await storage.logActivity({
+        entityType: "lead",
+        entityId: lead.id,
+        action: "sms_received",
+        details: `Inbound Telnyx SMS from ${From}: ${String(Body).substring(0, 100)}`,
+        organizationId: lead.organizationId,
+      });
+
+      if (await isReactorEnabled(lead.organizationId)) {
+        const reactor = Reactor.getInstance();
+        reactor.emit({
+          type: "webhook.telnyx.sms",
+          organizationId: lead.organizationId!,
+          payload: { from: From, body: Body, messageSid: MessageSid, leadId: lead.id },
+          metadata: { leadId: lead.id, priority: 2, agentSource: "telnyx-webhook" },
+        });
+      }
+    } else {
+      console.log(`⚠️  Inbound Telnyx SMS from unknown number: ${From}`);
+    }
+
+    res.sendStatus(200);
+  } catch (error: any) {
+    console.error("Telnyx SMS webhook error:", error.message);
+    res.sendStatus(200);
+  }
+});
+
 // Twilio call status callback
 router.post("/api/webhooks/twilio/call-status", validateTwilioGeneric, async (req: Request, res: Response) => {
   try {

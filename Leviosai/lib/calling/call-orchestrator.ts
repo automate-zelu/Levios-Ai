@@ -15,7 +15,7 @@ import { sdrCallSessions, sdrEnrollments, sdrConfigs, leads, workspaces } from "
 import type { EnrollmentStatus } from "../schema.js";
 import { stateMachine, TERMINAL_STATUSES } from "../sdr-state-machine.js";
 import { enqueueJob, fallThroughToSms, storeEnrollmentJobId } from "../sdr-queue.js";
-import { getClientForWorkspace } from "../twilio-subaccount.js";
+import { placeOutboundCall, workspacePhoneConnected } from "../telephony.js";
 import { checkCallCompliance } from "../compliance.js";
 import { eq, sql } from "drizzle-orm";
 import { isSdrDryRun } from "../sdr-dry-run.js";
@@ -73,8 +73,8 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
 
   if (!workspace) throw new Error(`Workspace ${enrollment.workspaceId} not found`);
 
-  // Twilio must be provisioned before dialling (skipped in SDR_DRY_RUN)
-  if (!workspace.twilioPhoneNumber && !isSdrDryRun()) {
+  // Phone provider (Twilio or Telnyx) must be ready before dialling (skipped in SDR_DRY_RUN)
+  if (!workspacePhoneConnected(workspace) && !isSdrDryRun()) {
     console.log(`SDR Call: workspace ${workspace.id} has no phone number — deferring`);
     // Re-queue in 1 hour so provisioning can complete; do not advance state
     const jobId = await enqueueJob("INITIATE_CALL", enrollmentId, 60 * 60 * 1000);
@@ -208,35 +208,25 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
     return;
   }
 
-  // 5. Place outbound Twilio call via workspace sub-account
-  const { client: twilioClient, fromNumber } = getClientForWorkspace(workspace);
-
-  if (!fromNumber) {
-    throw new Error(`Workspace ${workspace.id} has no provisioned phone number`);
-  }
-
-  const call = await twilioClient.calls.create({
-    to:   lead.phone,
-    from: fromNumber,
-    // TwiML endpoint — tells Twilio to open a media stream to our WebSocket
-    url:  `${baseUrl}/api/call/connect/${session.id}`,
-    // Status callback — fires when call completes/fails/busy
-    statusCallback:       `${baseUrl}/api/call/status/${session.id}`,
-    statusCallbackMethod: "POST",
-    statusCallbackEvent:  ["initiated", "ringing", "answered", "completed"],
-    // Recording
-    record:                  true,
+  // 5. Place outbound call via workspace BYOT provider (Twilio or Telnyx)
+  const placed = await placeOutboundCall(workspace, {
+    to: lead.phone,
+    connectUrl: `${baseUrl}/api/call/connect/${session.id}`,
+    statusCallback: `${baseUrl}/api/call/status/${session.id}`,
     recordingStatusCallback: `${baseUrl}/api/call/recording/${session.id}`,
+    record: true,
   });
 
-  // 6. Store Twilio call SID for correlation with status webhooks
+  // 6. Store provider call SID for correlation with status webhooks
   await db
     .update(sdrCallSessions)
-    .set({ twilioCallSid: call.sid })
+    .set({ twilioCallSid: placed.sid })
     .where(eq(sdrCallSessions.id, session.id));
 
   liveCallRegistry.start(session.id, workspace.id, []);
   liveCallRegistry.setStatus(session.id, "initiated");
 
-  console.log(`SDR Call: initiated call ${call.sid} for lead ${lead.id} (session ${session.id})`);
+  console.log(
+    `SDR Call: initiated ${placed.provider} call ${placed.sid} for lead ${lead.id} (session ${session.id})`
+  );
 }
