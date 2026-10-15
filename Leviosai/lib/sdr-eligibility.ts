@@ -27,6 +27,7 @@ export const ACTIVE_ENROLLMENT_STATUSES: EnrollmentStatus[] = [
 
 export type EligibilityDenyReason =
   | "workspace_inactive"
+  | "service_paused"
   | "lead_limit"
   | "closed_lead"
   | "opted_out"
@@ -60,6 +61,8 @@ export type WorkspaceEligibilityInput = {
   isActive?: boolean | null;
   monthlyLeadsUsed?: number | null;
   monthlyLeadLimit?: number | null;
+  /** Org-level non-payment pause (P1.4) — blocks outbound even if workspace looks active. */
+  servicePaused?: boolean | null;
 };
 
 function asDate(value: Date | string | null | undefined): Date | null {
@@ -144,6 +147,10 @@ export function evaluateEnrollmentEligibility(opts: {
 
   if (ws && ws.isActive === false) {
     return { ok: false, reason: "workspace_inactive" };
+  }
+
+  if (ws && ws.servicePaused === true) {
+    return { ok: false, reason: "service_paused" };
   }
 
   const leadStatus = (lead.status || "").toLowerCase();

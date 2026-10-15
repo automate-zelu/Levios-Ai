@@ -13,17 +13,30 @@ import {
   workspaces,
 } from "./schema.js";
 import {
+  APPOINTMENT_FEE_MAX_CENTS,
+  APPOINTMENT_FEE_MIN_CENTS,
   DEFAULT_APPOINTMENT_FEE_CENTS,
   DEFAULT_GLOBAL_MONTHLY_FEE_CENTS,
+  MONTHLY_FEE_MAX_CENTS,
+  MONTHLY_FEE_MIN_CENTS,
   formatUsdFromCents,
   normalizeCents,
   planAppointmentCharge,
   resolveCommercialPricing,
+  validateFeeCents,
   type OrgCommercialOverrides,
   type PlatformCommercialDefaults,
   type ResolvedCommercialPricing,
 } from "./commercial-pricing.js";
 import { formatCycleLabel } from "./subscription-cycle.js";
+import { storage } from "./storage.js";
+import {
+  clearPausePatch,
+  isBillingCadence,
+  pausePatchOnFailure,
+  shouldAutoPauseOnPaymentFailure,
+  type BillingCadence,
+} from "./billing-pause.js";
 
 let schemaReady = false;
 
@@ -116,6 +129,47 @@ export async function ensureCommercialPricingSchema(): Promise<void> {
       ON appointment_charges (organization_id, period_key)
       WHERE fee_kind = 'monthly' AND period_key IS NOT NULL
     `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS billing_cadence TEXT NOT NULL DEFAULT 'per_appointment'
+    `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS payment_plan_approved BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS pause_exempt BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS service_paused BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS paused_at TIMESTAMP
+    `);
+    await db.execute(sql`
+      ALTER TABLE organizations
+      ADD COLUMN IF NOT EXISTS pause_reason TEXT
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS usage_events (
+        id SERIAL PRIMARY KEY,
+        organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        workspace_id UUID,
+        meter_id TEXT NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        cost_cents INTEGER NOT NULL DEFAULT 0,
+        period_key TEXT,
+        metadata TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS usage_events_org_period_idx
+      ON usage_events (organization_id, period_key)
+    `);
     schemaReady = true;
   } catch (err: any) {
     console.error("ensureCommercialPricingSchema:", err?.message || err);
@@ -178,7 +232,11 @@ export async function updatePlatformCommercialDefaults(
     updatedAt: new Date(),
   };
   if (patch.monthlyFeeCents != null) {
-    updates.monthlyFeeCents = normalizeCents(patch.monthlyFeeCents, DEFAULT_GLOBAL_MONTHLY_FEE_CENTS);
+    updates.monthlyFeeCents = validateFeeCents(patch.monthlyFeeCents, {
+      min: MONTHLY_FEE_MIN_CENTS,
+      max: MONTHLY_FEE_MAX_CENTS,
+      label: "Monthly retainer",
+    });
   }
   if (patch.monthlyFeeEnabledByDefault === false) {
     throw new Error("Monthly retainer cannot be disabled.");
@@ -225,9 +283,16 @@ export async function updateOrgCommercialPricing(
     appointmentFeeEnabled?: boolean | null;
     costPerAppointmentCents?: number | null;
     clearMonthlyOverride?: boolean;
+    billingCadence?: BillingCadence | string | null;
+    paymentPlanApproved?: boolean | null;
+    pauseExempt?: boolean | null;
+    /** Actor email/id for activity audit (P1.2). */
+    actorUserId?: number | null;
+    actorLabel?: string | null;
   }
 ): Promise<ResolvedCommercialPricing & { organizationId: number }> {
   await ensureCommercialPricingSchema();
+  const before = await getOrgCommercialPricing(organizationId);
   const updates: Record<string, unknown> = {
     // Monthly retainer is always on. Amount changes apply to future periods only.
     monthlyFeeEnabled: true,
@@ -242,7 +307,11 @@ export async function updateOrgCommercialPricing(
     updates.monthlyFeeOverrideCents =
       patch.monthlyFeeOverrideCents == null
         ? null
-        : normalizeCents(patch.monthlyFeeOverrideCents, 0);
+        : validateFeeCents(patch.monthlyFeeOverrideCents, {
+            min: MONTHLY_FEE_MIN_CENTS,
+            max: MONTHLY_FEE_MAX_CENTS,
+            label: "Monthly retainer override",
+          });
   }
   if ("appointmentFeeEnabled" in patch) {
     // Off = no NEW appointment charges. Existing appointment lines keep their amount/status.
@@ -253,11 +322,143 @@ export async function updateOrgCommercialPricing(
     updates.costPerAppointmentCents =
       patch.costPerAppointmentCents == null
         ? null
-        : normalizeCents(patch.costPerAppointmentCents, 0);
+        : validateFeeCents(patch.costPerAppointmentCents, {
+            min: APPOINTMENT_FEE_MIN_CENTS,
+            max: APPOINTMENT_FEE_MAX_CENTS,
+            label: "Per-appointment fee",
+          });
+  }
+  if ("billingCadence" in patch && patch.billingCadence != null) {
+    if (!isBillingCadence(patch.billingCadence)) {
+      throw new Error("billingCadence must be per_appointment, weekly, or monthly");
+    }
+    updates.billingCadence = patch.billingCadence;
+  }
+  if ("paymentPlanApproved" in patch) {
+    updates.paymentPlanApproved = !!patch.paymentPlanApproved;
+    // Approving a weekly/monthly plan implies pause exemption unless explicitly cleared.
+    if (patch.paymentPlanApproved && !("pauseExempt" in patch)) {
+      updates.pauseExempt = true;
+    }
+  }
+  if ("pauseExempt" in patch) {
+    updates.pauseExempt = !!patch.pauseExempt;
   }
 
   await db.update(organizations).set(updates).where(eq(organizations.id, organizationId));
-  return getOrgCommercialPricing(organizationId);
+  const after = await getOrgCommercialPricing(organizationId);
+
+  const feeChanged =
+    before.monthlyFeeCents !== after.monthlyFeeCents ||
+    before.appointmentFeeCents !== after.appointmentFeeCents ||
+    before.appointmentFeeEnabled !== after.appointmentFeeEnabled;
+  if (feeChanged) {
+    try {
+      await storage.logActivity({
+        organizationId,
+        action: "commercial_pricing_updated",
+        entityType: "organization",
+        entityId: organizationId,
+        details: JSON.stringify({
+          by: patch.actorLabel || patch.actorUserId || "admin",
+          before: {
+            monthlyFeeCents: before.monthlyFeeCents,
+            appointmentFeeCents: before.appointmentFeeCents,
+            appointmentFeeEnabled: before.appointmentFeeEnabled,
+          },
+          after: {
+            monthlyFeeCents: after.monthlyFeeCents,
+            appointmentFeeCents: after.appointmentFeeCents,
+            appointmentFeeEnabled: after.appointmentFeeEnabled,
+          },
+        }),
+      });
+    } catch (err: any) {
+      console.warn("commercial pricing audit log failed:", err?.message || err);
+    }
+  }
+
+  return after;
+}
+
+export async function getOrgBillingPauseState(organizationId: number) {
+  await ensureCommercialPricingSchema();
+  const [org] = await db
+    .select({
+      billingCadence: organizations.billingCadence,
+      paymentPlanApproved: organizations.paymentPlanApproved,
+      pauseExempt: organizations.pauseExempt,
+      servicePaused: organizations.servicePaused,
+      pausedAt: organizations.pausedAt,
+      pauseReason: organizations.pauseReason,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  return {
+    billingCadence: (org?.billingCadence as BillingCadence) || "per_appointment",
+    paymentPlanApproved: !!org?.paymentPlanApproved,
+    pauseExempt: !!org?.pauseExempt,
+    servicePaused: !!org?.servicePaused,
+    pausedAt: org?.pausedAt || null,
+    pauseReason: org?.pauseReason || null,
+  };
+}
+
+/** Pause outbound AI after payment failure unless exempt. Also deactivates workspaces. */
+export async function pauseOrgForNonPayment(
+  organizationId: number,
+  reason = "payment_failed"
+): Promise<{ paused: boolean; skipped: boolean }> {
+  await ensureCommercialPricingSchema();
+  const state = await getOrgBillingPauseState(organizationId);
+  if (!shouldAutoPauseOnPaymentFailure(state)) {
+    return { paused: false, skipped: true };
+  }
+  await db
+    .update(organizations)
+    .set(pausePatchOnFailure(reason))
+    .where(eq(organizations.id, organizationId));
+  await db
+    .update(workspaces)
+    .set({ isActive: false })
+    .where(eq(workspaces.organizationId, organizationId));
+  try {
+    await storage.logActivity({
+      organizationId,
+      action: "service_paused",
+      entityType: "organization",
+      entityId: organizationId,
+      details: reason,
+    });
+  } catch {
+    /* non-fatal */
+  }
+  return { paused: true, skipped: false };
+}
+
+export async function resumeOrgAfterPayment(organizationId: number): Promise<void> {
+  await ensureCommercialPricingSchema();
+  await db
+    .update(organizations)
+    .set(clearPausePatch())
+    .where(eq(organizations.id, organizationId));
+  try {
+    await storage.logActivity({
+      organizationId,
+      action: "service_resumed",
+      entityType: "organization",
+      entityId: organizationId,
+      details: "payment_succeeded",
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+export async function isOrgServicePaused(organizationId: number): Promise<boolean> {
+  const state = await getOrgBillingPauseState(organizationId);
+  return state.servicePaused;
 }
 
 export async function listPricingClients() {
@@ -698,6 +899,26 @@ export async function getOrgMonthlyBill(organizationId: number, period = billing
     .filter((l) => l.status === "pending" || l.status === "invoiced")
     .reduce((s, l) => s + (l.amountCents || 0), 0);
 
+  const appointmentCount = appointmentLines.length;
+  const [ws] = await db
+    .select({
+      monthlyMinutesUsed: workspaces.monthlyMinutesUsed,
+    })
+    .from(workspaces)
+    .where(eq(workspaces.organizationId, organizationId))
+    .limit(1);
+
+  const { buildHybridInvoicePreview } = await import("./commercial-pricing.js");
+  const { usageLinesForInvoicePreview } = await import("./usage-billing.js");
+  const invoicePreview = buildHybridInvoicePreview({
+    pricing,
+    appointmentCount,
+    extraUsageLines: usageLinesForInvoicePreview({
+      appointmentCount,
+      callMinutesUsed: ws?.monthlyMinutesUsed ?? 0,
+    }),
+  });
+
   return {
     organizationId,
     organizationName: org?.name || `Org ${organizationId}`,
@@ -705,10 +926,11 @@ export async function getOrgMonthlyBill(organizationId: number, period = billing
     periodLabel: label,
     rates: pricing,
     lines: unique,
+    invoicePreview,
     breakdown: {
       monthlyCents: monthlyLines.reduce((s, l) => s + l.amountCents, 0),
       appointmentCents: appointmentLines.reduce((s, l) => s + l.amountCents, 0),
-      appointmentCount: appointmentLines.length,
+      appointmentCount,
       totalCents,
       paidCents,
       pendingCents,

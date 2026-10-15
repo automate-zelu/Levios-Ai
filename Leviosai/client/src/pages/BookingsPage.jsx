@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { appointmentsApi, calendarApi } from "../api.js";
+import {
+  addDays,
+  appointmentsOnDay,
+  formatDayLabel,
+  formatMonthLabel,
+  monthGrid,
+  sameDay,
+  startOfMonth,
+  startOfWeek,
+  weekDays,
+} from "../lib/booking-calendar.js";
 import "./bookings.css";
 
 const TZ = "America/New_York";
@@ -44,6 +55,8 @@ export default function BookingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
+  const [view, setView] = useState("week"); // day | week | month | list
+  const [anchor, setAnchor] = useState(() => new Date());
   const [busyId, setBusyId] = useState(null);
   const [flash, setFlash] = useState("");
   const [modal, setModal] = useState(null);
@@ -123,13 +136,57 @@ export default function BookingsPage() {
     }
   };
 
+  const dayRows = useMemo(() => appointmentsOnDay(visible, anchor), [visible, anchor]);
+  const week = useMemo(() => weekDays(anchor), [anchor]);
+  const monthCells = useMemo(() => monthGrid(anchor), [anchor]);
+  const inMonth = startOfMonth(anchor);
+
+  const shiftAnchor = (dir) => {
+    if (view === "day") setAnchor((a) => addDays(a, dir));
+    else if (view === "week") setAnchor((a) => addDays(a, dir * 7));
+    else if (view === "month") setAnchor((a) => startOfMonth(addDays(startOfMonth(a), dir > 0 ? 32 : -1)));
+    else setAnchor((a) => addDays(a, dir * 7));
+  };
+
+  const renderRowActions = (row) => {
+    const locked = String(row.status).toLowerCase() === "completed";
+    return (
+      <div className="bookings-actions">
+        <button
+          type="button"
+          disabled={busyId === row.id || locked || String(row.status).toLowerCase() === "cancelled"}
+          onClick={() => {
+            setNotify(true);
+            setModal({ type: "cancel", row });
+          }}
+        >
+          Cancel
+        </button>
+        <button type="button" disabled={busyId === row.id || locked} onClick={() => openReschedule(row)}>
+          Reschedule
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={busyId === row.id}
+          onClick={() => {
+            setNotify(true);
+            setModal({ type: "delete", row });
+          }}
+        >
+          Delete
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div className="bookings">
       <header className="bookings-hero">
         <div>
-          <div className="bookings-kicker">Calendar ledger</div>
+          <div className="bookings-kicker">Calendar</div>
           <h1>Bookings</h1>
-          <p>Every appointment the SDR booked — cancel, reschedule, or remove, and we text and email the lead.</p>
+          <p>Day, week, and month views of appointments — cancel or reschedule and we notify the lead.</p>
         </div>
         <div className="bookings-stats">
           <div>
@@ -158,6 +215,17 @@ export default function BookingsPage() {
       {error && <div className="bookings-error">{error}</div>}
 
       <div className="bookings-toolbar">
+        {["day", "week", "month", "list"].map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={view === key ? "is-on" : ""}
+            onClick={() => setView(key)}
+          >
+            {key}
+          </button>
+        ))}
+        <span style={{ width: 1, height: 24, background: "var(--line)", margin: "0 4px" }} />
         {["all", "scheduled", "cancelled", "completed"].map((key) => (
           <button
             key={key}
@@ -170,16 +238,99 @@ export default function BookingsPage() {
         ))}
       </div>
 
+      {view !== "list" && (
+        <div className="bookings-toolbar" style={{ marginTop: -8 }}>
+          <button type="button" onClick={() => shiftAnchor(-1)}>←</button>
+          <button type="button" className="is-on" onClick={() => setAnchor(new Date())}>Today</button>
+          <button type="button" onClick={() => shiftAnchor(1)}>→</button>
+          <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: 13 }}>
+            {view === "month"
+              ? formatMonthLabel(anchor)
+              : view === "week"
+                ? `${formatDayLabel(startOfWeek(anchor))} – ${formatDayLabel(addDays(startOfWeek(anchor), 6))}`
+                : formatDayLabel(anchor)}
+          </span>
+        </div>
+      )}
+
       <div className="bookings-sheet">
         {loading && rows.length === 0 ? (
           <div className="bookings-empty">Loading bookings…</div>
+        ) : view === "day" ? (
+          dayRows.length === 0 ? (
+            <div className="bookings-empty">No bookings on this day.</div>
+          ) : (
+            <ul className="bookings-list">
+              {dayRows.map((row) => (
+                <li key={row.id} className={`bookings-row tone-${statusTone(row.status)}`}>
+                  <div className="bookings-when">
+                    <time dateTime={row.scheduledAt}>{formatWhen(row.scheduledAt)}</time>
+                  </div>
+                  <div className="bookings-who">
+                    <strong>{leadName(row)}</strong>
+                    <span>{row.title}</span>
+                  </div>
+                  <div className={`bookings-status ${statusTone(row.status)}`}>{row.status || "scheduled"}</div>
+                  {renderRowActions(row)}
+                </li>
+              ))}
+            </ul>
+          )
+        ) : view === "week" ? (
+          <div className="bookings-cal-week">
+            {week.map((day) => {
+              const items = appointmentsOnDay(visible, day);
+              return (
+                <div key={day.toISOString()} className={`bookings-cal-day ${sameDay(day, new Date()) ? "is-today" : ""}`}>
+                  <button type="button" className="bookings-cal-dayhead" onClick={() => { setAnchor(day); setView("day"); }}>
+                    {formatDayLabel(day)}
+                    <span>{items.length}</span>
+                  </button>
+                  <ul>
+                    {items.length === 0 ? (
+                      <li className="bookings-cal-empty">Open</li>
+                    ) : (
+                      items.map((row) => (
+                        <li key={row.id}>
+                          <button type="button" onClick={() => openReschedule(row)}>
+                            <strong>{leadName(row)}</strong>
+                            <span>{formatWhen(row.scheduledAt)}</span>
+                          </button>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+        ) : view === "month" ? (
+          <div className="bookings-cal-month">
+            {monthCells.map((day) => {
+              const items = appointmentsOnDay(visible, day);
+              const outside = day.getMonth() !== inMonth.getMonth();
+              return (
+                <button
+                  key={day.toISOString()}
+                  type="button"
+                  className={`bookings-cal-cell ${outside ? "is-out" : ""} ${sameDay(day, new Date()) ? "is-today" : ""}`}
+                  onClick={() => { setAnchor(day); setView("day"); }}
+                >
+                  <span className="bookings-cal-num">{day.getDate()}</span>
+                  {items.slice(0, 2).map((row) => (
+                    <span key={row.id} className="bookings-cal-chip">{leadName(row)}</span>
+                  ))}
+                  {items.length > 2 && <span className="bookings-cal-more">+{items.length - 2}</span>}
+                </button>
+              );
+            })}
+          </div>
         ) : visible.length === 0 ? (
           <div className="bookings-empty">No bookings in this view yet. When the agent books a time, it lands here.</div>
         ) : (
           <ul className="bookings-list">
             {visible.map((row) => {
               const tone = statusTone(row.status);
-              const locked = String(row.status).toLowerCase() === "completed";
               return (
                 <li key={row.id} className={`bookings-row tone-${tone}`}>
                   <div className="bookings-when">
@@ -195,36 +346,7 @@ export default function BookingsPage() {
                     </span>
                   </div>
                   <div className={`bookings-status ${tone}`}>{row.status || "scheduled"}</div>
-                  <div className="bookings-actions">
-                    <button
-                      type="button"
-                      disabled={busyId === row.id || locked || String(row.status).toLowerCase() === "cancelled"}
-                      onClick={() => {
-                        setNotify(true);
-                        setModal({ type: "cancel", row });
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyId === row.id || locked}
-                      onClick={() => openReschedule(row)}
-                    >
-                      Reschedule
-                    </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={busyId === row.id}
-                      onClick={() => {
-                        setNotify(true);
-                        setModal({ type: "delete", row });
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
+                  {renderRowActions(row)}
                 </li>
               );
             })}

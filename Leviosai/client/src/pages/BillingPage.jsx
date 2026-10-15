@@ -307,6 +307,13 @@ export default function BillingPage() {
         </div>
       )}
 
+      {data?.servicePause?.servicePaused && (
+        <div className="billing-alert billing-alert--error" role="alert">
+          Service paused — update payment to resume outbound AI calling, SMS, and email.
+          {data.servicePause.pauseReason ? ` (${data.servicePause.pauseReason})` : ""}
+        </div>
+      )}
+
       <section className="billing-fees" aria-labelledby="billing-fees-title">
         <h2 id="billing-fees-title">Your rates</h2>
         <div className="billing-fee-grid">
@@ -324,7 +331,7 @@ export default function BillingPage() {
             </p>
           </article>
           <article className="billing-fee-card">
-            <h3>Per appointment</h3>
+            <h3>Per appointment*</h3>
             <p className="billing-fee-amount">
               {commercial?.appointmentFeeEnabled
                 ? `${commercial.appointmentFeeLabel} / booking`
@@ -638,9 +645,13 @@ export default function BillingPage() {
         <h2>How pricing works</h2>
         <ul>
           <li>Monthly retainer is deducted from your card on your own billing date — the anniversary of when you subscribed.</li>
-          <li>Per-appointment fees are deducted from your card when a meeting is booked.</li>
+          <li>Per-appointment* fees are deducted from your card when a meeting is booked.</li>
           <li>Cancel the monthly retainer anytime. You keep access until period end. Appointment bookings are still charged to your card.</li>
         </ul>
+        <p style={{ marginTop: 12, fontSize: 12, color: "#888", lineHeight: 1.45 }}>
+          {data?.pricingFootnote ||
+            "* Per-appointment fees may be billed per booking, or collected on a weekly or monthly cadence at Leviosa Labs’ discretion."}
+        </p>
       </aside>
 
       {detail && (

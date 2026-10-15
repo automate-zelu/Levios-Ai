@@ -51,9 +51,12 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
     const {
       getOrgCommercialPricing,
       getPlatformCommercialDefaults,
+      getOrgBillingPauseState,
     } = await import("../lib/commercial-pricing-service.js");
+    const { PER_APPOINTMENT_FOOTNOTE } = await import("../lib/commercial-pricing.js");
     const commercial = await getOrgCommercialPricing(req.organizationId);
     const platformDefaults = await getPlatformCommercialDefaults();
+    const servicePause = await getOrgBillingPauseState(req.organizationId);
 
     res.json({
       plan: planKey,
@@ -84,12 +87,15 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
         canceledAt: org.subscriptionCanceledAt || null,
         lastError: org.lastBillingError || null,
       },
+      servicePause,
       stripeConfigured: isStripeConfigured(),
       pricingModel: "monthly_retainer_plus_per_appointment",
+      pricingFootnote: PER_APPOINTMENT_FOOTNOTE,
       sdr: workspace
         ? {
             tier: workspace.tier,
             tierLabel: tierMeta.label,
+            marketingName: tierMeta.marketingName,
             isActive: workspace.isActive,
             priceHint: tierMeta.priceHint,
             usage: {

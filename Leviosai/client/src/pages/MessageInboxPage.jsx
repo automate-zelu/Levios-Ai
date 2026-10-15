@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
 import { messagesApi, leadsApi, messagingApi, aiApi } from "../api.js";
 import { parseEmailContent, emailPreviewLine } from "../lib/emailMessage.js";
@@ -26,16 +26,34 @@ function formatRelative(iso) {
 }
 
 /**
- * Dedicated SMS or Email inbox.
- * SMS = chat bubbles + reply composer; Email = subject / body mail layout.
+ * Unified lead-centered inbox (P3.3).
+ * channel prop: "all" | "sms" | "email" (legacy routes pass sms/email).
  */
-export default function MessageInboxPage({ channel }) {
+export default function MessageInboxPage({ channel: channelProp = "all" }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const channelFromQuery = searchParams.get("channel");
+  const channel =
+    channelFromQuery === "sms" || channelFromQuery === "email" || channelFromQuery === "all"
+      ? channelFromQuery
+      : channelProp === "sms" || channelProp === "email"
+        ? channelProp
+        : "all";
+  const setChannel = (next) => {
+    const nextParams = new URLSearchParams(searchParams);
+    if (next === "all") nextParams.delete("channel");
+    else nextParams.set("channel", next);
+    setSearchParams(nextParams, { replace: true });
+  };
+
   const isSms = channel === "sms";
-  const title = isSms ? "SMS Inbox" : "Email Inbox";
-  const subtitle = isSms
-    ? "SDR texts with leads — follow-ups, replies, and send from here."
-    : "SDR email follow-ups and replies — subject, body, and thread view.";
+  const isAll = channel === "all";
+  const title = isAll ? "Inbox" : isSms ? "SMS Inbox" : "Email Inbox";
+  const subtitle = isAll
+    ? "All lead conversations — SMS and email in one place. Open a lead for the full timeline."
+    : isSms
+      ? "SDR texts with leads — follow-ups, replies, and send from here."
+      : "SDR email follow-ups and replies — subject, body, and thread view.";
 
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -44,10 +62,13 @@ export default function MessageInboxPage({ channel }) {
   const [messages, setMessages] = useState([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState(() =>
+    searchParams.get("filter") === "waiting" ? "waiting" : "all"
+  );
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [drafting, setDrafting] = useState(false);
+  const [composeChannel, setComposeChannel] = useState("sms");
   const streamEndRef = useRef(null);
 
   const loadThreads = (silent = false) => {
@@ -56,7 +77,7 @@ export default function MessageInboxPage({ channel }) {
       setError("");
     }
     messagesApi
-      .threads(channel, 80)
+      .threads(channel === "all" ? "all" : channel, 80)
       .then((data) => {
         const list = data.threads || [];
         setThreads(list);
@@ -85,7 +106,6 @@ export default function MessageInboxPage({ channel }) {
     setSelectedLeadId(null);
     setMessages([]);
     setDraft("");
-    setFilter("all");
     loadThreads(false);
   }, [channel]);
 
@@ -111,8 +131,15 @@ export default function MessageInboxPage({ channel }) {
     leadsApi
       .getMessages(selectedLeadId)
       .then((rows) => {
-        const filtered = (rows || []).filter((m) => m.channel === channel);
+        const filtered =
+          channel === "all"
+            ? rows || []
+            : (rows || []).filter((m) => m.channel === channel);
         setMessages(filtered);
+        const last = filtered[filtered.length - 1];
+        if (last?.channel === "email" || last?.channel === "sms") {
+          setComposeChannel(last.channel);
+        }
       })
       .catch((e) => setError(e.message || "Failed to load thread"))
       .finally(() => setThreadLoading(false));
@@ -145,9 +172,11 @@ export default function MessageInboxPage({ channel }) {
     ? [selected.leadFirstName, selected.leadLastName].filter(Boolean).join(" ") || `Lead #${selected.leadId}`
     : "";
 
+  const canComposeSms = isSms || (isAll && composeChannel === "sms");
+
   const sendSms = async () => {
     const text = draft.trim();
-    if (!isSms || !selectedLeadId || !text || sending) return;
+    if (!canComposeSms || !selectedLeadId || !text || sending) return;
     setSending(true);
     setError("");
     try {
@@ -187,17 +216,43 @@ export default function MessageInboxPage({ channel }) {
   const over = draft.length > 160;
 
   return (
-    <div className={`message-inbox ${isSms ? "is-sms" : "is-mail"}`}>
+    <div className={`message-inbox ${canComposeSms ? "is-sms" : "is-mail"}`}>
       <header className="message-inbox-hero">
         <div className="message-inbox-hero-top">
           <div>
-            <div className="message-inbox-kicker">{isSms ? "Text desk" : "Mailbox"}</div>
+            <div className="message-inbox-kicker">Lead communications</div>
             <h1>{title}</h1>
             <p>{subtitle}</p>
           </div>
-          <button type="button" className="message-inbox-btn message-inbox-btn--ghost" onClick={() => loadThreads(false)}>
-            Refresh
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="message-inbox-btn message-inbox-btn--ghost"
+              disabled={!selectedLeadId}
+              onClick={() => selectedLeadId && navigate(`/leads/${selectedLeadId}?tab=timeline`)}
+            >
+              Lead timeline
+            </button>
+            <button type="button" className="message-inbox-btn message-inbox-btn--ghost" onClick={() => loadThreads(false)}>
+              Refresh
+            </button>
+          </div>
+        </div>
+        <div className="message-inbox-filters" style={{ marginBottom: 12 }}>
+          {[
+            { id: "all", label: "All" },
+            { id: "sms", label: "SMS" },
+            { id: "email", label: "Email" },
+          ].map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className={channel === c.id ? "is-on" : ""}
+              onClick={() => setChannel(c.id)}
+            >
+              {c.label}
+            </button>
+          ))}
         </div>
         <div className="message-inbox-metrics">
           <div className="message-inbox-metric">
@@ -205,7 +260,7 @@ export default function MessageInboxPage({ channel }) {
             <strong>{threads.length}</strong>
           </div>
           <div className="message-inbox-metric">
-            <span>{isSms ? "Waiting on you" : "Inbound last"}</span>
+            <span>Waiting on you</span>
             <strong>{waitingCount}</strong>
           </div>
           <div className="message-inbox-metric">
@@ -248,21 +303,24 @@ export default function MessageInboxPage({ channel }) {
             ) : filteredThreads.length === 0 ? (
               <div className="message-inbox-empty">
                 {threads.length === 0
-                  ? `No ${isSms ? "SMS" : "email"} yet. Threads show up when the sequence texts a lead or they reply.`
+                  ? "No conversations yet. Threads show up when the agent messages a lead or they reply."
                   : "No conversations match that search."}
               </div>
             ) : (
               filteredThreads.map((t) => {
                 const name = [t.leadFirstName, t.leadLastName].filter(Boolean).join(" ") || `Lead #${t.leadId}`;
-                const contact = isSms ? t.leadPhone : t.leadEmail;
+                const lastCh = t.lastMessage?.channel || channel;
+                const contact = lastCh === "email" ? t.leadEmail : t.leadPhone;
                 const active = t.leadId === selectedLeadId;
                 const waiting = t.lastMessage?.direction === "inbound";
-                const preview = isSms
-                  ? (t.lastMessage?.content || "").replace(/\s+/g, " ")
-                  : emailPreviewLine(t.lastMessage?.content || "", 80);
-                const { subject: lastSubject } = isSms
-                  ? { subject: "" }
-                  : parseEmailContent(t.lastMessage?.content || "");
+                const preview =
+                  lastCh === "email"
+                    ? emailPreviewLine(t.lastMessage?.content || "", 80)
+                    : (t.lastMessage?.content || "").replace(/\s+/g, " ");
+                const { subject: lastSubject } =
+                  lastCh === "email"
+                    ? parseEmailContent(t.lastMessage?.content || "")
+                    : { subject: "" };
                 return (
                   <button
                     key={t.leadId}
@@ -279,8 +337,9 @@ export default function MessageInboxPage({ channel }) {
                         <time>{formatRelative(t.lastMessage?.createdAt)}</time>
                       </div>
                       <p>
+                        {lastCh === "email" ? "✉️ " : "💬 "}
                         {contact ? `${contact} · ` : ""}
-                        {isSms
+                        {lastCh === "sms"
                           ? `${waiting ? "They: " : "You: "}${preview || "(empty)"}`
                           : lastSubject || preview || "(empty)"}
                         {t.messageCount > 1 ? ` · ${t.messageCount}` : ""}
@@ -304,19 +363,18 @@ export default function MessageInboxPage({ channel }) {
                 <div>
                   <h2>{selectedName}</h2>
                   <p>
-                    {isSms ? selected.leadPhone : selected.leadEmail}
-                    {" · "}
-                    {isSms ? "SMS" : "Email"}
+                    {[selected.leadPhone, selected.leadEmail].filter(Boolean).join(" · ") || "—"}
+                    {isAll ? " · SMS + Email" : isSms ? " · SMS" : " · Email"}
                   </p>
                 </div>
                 <div className="message-inbox-pane-actions">
-                  <span style={S.badge(isSms ? COLORS.teal : COLORS.blue)}>
-                    {messages.length} {isSms ? "text" : "email"}{messages.length === 1 ? "" : "s"}
+                  <span style={S.badge(COLORS.teal)}>
+                    {messages.length} message{messages.length === 1 ? "" : "s"}
                   </span>
                   <button
                     type="button"
                     className="message-inbox-btn message-inbox-btn--ghost"
-                    onClick={() => navigate(`/leads/${selected.leadId}`)}
+                    onClick={() => navigate(`/leads/${selected.leadId}?tab=timeline`)}
                   >
                     Open lead
                   </button>
@@ -328,55 +386,83 @@ export default function MessageInboxPage({ channel }) {
                   <div className="message-inbox-empty">Loading messages…</div>
                 ) : messages.length === 0 ? (
                   <div className="message-inbox-empty">No messages in this thread.</div>
-                ) : isSms ? (
-                  messages.map((m) => <SmsBubble key={m.id} message={m} leadName={selectedName} />)
                 ) : (
-                  messages.map((m) => (
-                    <EmailCard
-                      key={m.id}
-                      message={m}
-                      leadName={selectedName}
-                      leadEmail={selected.leadEmail}
-                    />
-                  ))
+                  messages.map((m) =>
+                    m.channel === "email" ? (
+                      <EmailCard
+                        key={m.id}
+                        message={m}
+                        leadName={selectedName}
+                        leadEmail={selected.leadEmail}
+                      />
+                    ) : (
+                      <SmsBubble key={m.id} message={m} leadName={selectedName} />
+                    )
+                  )
                 )}
                 <div ref={streamEndRef} />
               </div>
 
-              {isSms && (
+              {(canComposeSms || isAll) && (
                 <div className="message-inbox-composer">
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder={`Reply to ${selectedName.split(" ")[0] || "lead"}…`}
-                    aria-label="SMS reply"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendSms();
-                    }}
-                  />
-                  <div className="message-inbox-composer-bar">
-                    <em className={over ? "is-over" : ""}>
-                      {draft.length}/160{over ? " · will split on some carriers" : " · ⌘ Enter to send"}
-                    </em>
-                    <div style={{ display: "flex", gap: 8 }}>
+                  {isAll && (
+                    <div className="message-inbox-filters" style={{ marginBottom: 8 }}>
                       <button
                         type="button"
-                        className="message-inbox-btn message-inbox-btn--ghost"
-                        disabled={drafting}
-                        onClick={draftReply}
+                        className={composeChannel === "sms" ? "is-on" : ""}
+                        onClick={() => setComposeChannel("sms")}
                       >
-                        {drafting ? "Drafting…" : "Draft reply"}
+                        Reply SMS
                       </button>
                       <button
                         type="button"
-                        className="message-inbox-btn message-inbox-btn--primary"
-                        disabled={sending || !draft.trim()}
-                        onClick={sendSms}
+                        className={composeChannel === "email" ? "is-on" : ""}
+                        onClick={() => setComposeChannel("email")}
                       >
-                        {sending ? "Sending…" : "Send SMS"}
+                        View email
                       </button>
                     </div>
-                  </div>
+                  )}
+                  {(composeChannel === "sms" || isSms) && canComposeSms ? (
+                    <>
+                      <textarea
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        placeholder={`Reply to ${selectedName.split(" ")[0] || "lead"}…`}
+                        aria-label="SMS reply"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendSms();
+                        }}
+                      />
+                      <div className="message-inbox-composer-bar">
+                        <em className={over ? "is-over" : ""}>
+                          {draft.length}/160{over ? " · will split on some carriers" : " · ⌘ Enter to send"}
+                        </em>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            type="button"
+                            className="message-inbox-btn message-inbox-btn--ghost"
+                            disabled={drafting}
+                            onClick={draftReply}
+                          >
+                            {drafting ? "Drafting…" : "Draft reply"}
+                          </button>
+                          <button
+                            type="button"
+                            className="message-inbox-btn message-inbox-btn--primary"
+                            disabled={sending || !draft.trim()}
+                            onClick={sendSms}
+                          >
+                            {sending ? "Sending…" : "Send SMS"}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="message-inbox-empty" style={{ padding: 12 }}>
+                      Email reply from inbox is read-focused — use Open lead for the full timeline.
+                    </div>
+                  )}
                 </div>
               )}
             </>

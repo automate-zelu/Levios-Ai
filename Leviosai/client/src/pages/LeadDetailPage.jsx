@@ -4,10 +4,12 @@ import { COLORS, S } from "../theme.js";
 import { leadsApi, messagingApi } from "../api.js";
 import { LeadSequencesPanel } from "../components/sdr/LeadSequencesPanel.jsx";
 import LeadEditDrawer, { parseLeadNotes } from "../components/leads/LeadEditDrawer.jsx";
+import { LeadTimelinePanel } from "../components/leads/LeadTimelinePanel.jsx";
 import { parseEmailContent } from "../lib/emailMessage.js";
 
 const NAV = [
   { id: "overview", label: "Overview", icon: "👤" },
+  { id: "timeline", label: "Timeline", icon: "🕒" },
   { id: "sequences", label: "Sequences", icon: "🔁" },
 ];
 
@@ -48,16 +50,19 @@ export default function LeadDetailPage({ onNavigate }) {
   const [editOpen, setEditOpen] = useState(false);
 
   const rawTab = searchParams.get("tab") || "overview";
-  const tab = rawTab === "sequences" ? "sequences" : "overview";
+  const tab =
+    rawTab === "sequences" || rawTab === "timeline" || rawTab === "overview"
+      ? rawTab
+      : "overview";
 
   const setTab = (id) => {
     setSearchParams(id === "overview" ? {} : { tab: id }, { replace: true });
   };
 
-  // Legacy ?tab=messages|score → overview
+  // Legacy ?tab=messages|score → timeline (conversation history lives here now)
   useEffect(() => {
-    if (rawTab === "messages" || rawTab === "score") {
-      setSearchParams({}, { replace: true });
+    if (rawTab === "messages" || rawTab === "score" || rawTab === "replay") {
+      setSearchParams({ tab: "timeline" }, { replace: true });
     }
   }, [rawTab, setSearchParams]);
 
@@ -230,8 +235,16 @@ export default function LeadDetailPage({ onNavigate }) {
               emailCount={emailCount}
               onOpenChat={(channel) => setChatChannel(channel)}
               onOpenSequences={() => setTab("sequences")}
+              onOpenTimeline={() => setTab("timeline")}
               onEdit={() => setEditOpen(true)}
             />
+          )}
+
+          {tab === "timeline" && (
+            <div style={S.card}>
+              <div style={S.cardHeader}>Activity timeline</div>
+              <LeadTimelinePanel leadId={lead.id} messages={sortedMessages} />
+            </div>
           )}
 
           {tab === "sequences" && (
@@ -343,7 +356,7 @@ function ChannelPreview({ channel, messages, onOpen }) {
   );
 }
 
-function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences, onEdit }) {
+function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpenSequences, onOpenTimeline, onEdit }) {
   const smsMessages = useMemo(() => messages.filter((m) => m.channel === "sms"), [messages]);
   const emailMessages = useMemo(() => messages.filter((m) => m.channel === "email"), [messages]);
 
@@ -388,9 +401,14 @@ function OverviewPanel({ lead, messages, smsCount, emailCount, onOpenChat, onOpe
 
       <div style={{ ...S.card, marginBottom: 0 }}>
         <div style={S.cardHeader}>Next</div>
-        <button type="button" style={S.btn("ghost")} onClick={onOpenSequences}>
-          Open sequences →
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" style={S.btn("ghost")} onClick={onOpenTimeline}>
+            Open timeline →
+          </button>
+          <button type="button" style={S.btn("ghost")} onClick={onOpenSequences}>
+            Open sequences →
+          </button>
+        </div>
       </div>
     </div>
   );

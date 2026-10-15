@@ -7,9 +7,9 @@ import { SMSTemplateEditor } from "../sdr/SMSTemplateEditor.jsx";
 import { EmailTemplateEditor } from "../sdr/EmailTemplateEditor.jsx";
 import { ThresholdSettings } from "../sdr/ThresholdSettings.jsx";
 
-function defaultsFor(user) {
+function defaultsFor(user, companyHint) {
   const firstName = user?.firstName || "Your";
-  const orgLabel = `${firstName}'s Company`;
+  const orgLabel = (companyHint && String(companyHint).trim()) || `${firstName}'s Company`;
   return {
     systemPrompt:
       `You are an AI sales development representative for ${orgLabel}. ` +
@@ -35,10 +35,11 @@ function defaultsFor(user) {
 }
 
 /**
- * Step 2 — Configure SDR via PUT /api/sdr/config.
+ * Configure SDR via PUT /api/sdr/config (Levvi Agent step).
+ * When hideKnowledgeBase is true, KB is handled on the dedicated Knowledge step.
  */
-export function OnboardingStep2({ user, onConfigured }) {
-  const [form, setForm] = useState(() => defaultsFor(user));
+export function OnboardingStep2({ user, onConfigured, hideKnowledgeBase = false, companyHint }) {
+  const [form, setForm] = useState(() => defaultsFor(user, companyHint));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -72,6 +73,8 @@ export function OnboardingStep2({ user, onConfigured }) {
     setSaving(true);
     setErr("");
     try {
+      // Always send knowledgeBase so PUT does not wipe an existing KB when the
+      // Agent step hides the editor (value still loaded from getConfig).
       await sdrApi.saveConfig({
         systemPrompt: form.systemPrompt,
         knowledgeBase: form.knowledgeBase || null,
@@ -103,7 +106,9 @@ export function OnboardingStep2({ user, onConfigured }) {
       </p>
 
       <PromptEditor value={form.systemPrompt} onChange={(v) => set("systemPrompt", v)} />
-      <KnowledgeBaseInput value={form.knowledgeBase} onChange={(v) => set("knowledgeBase", v)} />
+      {!hideKnowledgeBase && (
+        <KnowledgeBaseInput value={form.knowledgeBase} onChange={(v) => set("knowledgeBase", v)} />
+      )}
       <SMSTemplateEditor value={form.smsTemplate} onChange={(v) => set("smsTemplate", v)} />
       <EmailTemplateEditor
         subject={form.emailSubject}

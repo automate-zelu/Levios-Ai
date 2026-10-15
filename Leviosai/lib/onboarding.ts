@@ -1,29 +1,42 @@
-// ─── ONBOARDING HELPERS ──────────────────────────────────────────────────────
-// Pure helpers for the 3-step SDR onboarding wizard (plan §13.4).
-// Step progress is stored in localStorage; completion is persisted on the user.
+// ─── LEVVI ONBOARDING HELPERS (P4) ───────────────────────────────────────────
+// Pure helpers for the first-login Levvi wizard.
+// Step progress + draft live in localStorage; completion on the user record.
 
 export const ONBOARDING_STORAGE_KEY = "catalyst_onboarding_step";
 export const ONBOARDING_FLAG_KEY = "catalyst_needs_onboarding";
+export const ONBOARDING_DRAFT_KEY = "catalyst_onboarding_draft";
 
-export const ONBOARDING_STEP_LABELS = ["Subscribe", "Configure SDR", "Activate"] as const;
+export const ONBOARDING_STEP_LABELS = [
+  "Welcome",
+  "Catalyst",
+  "Business",
+  "Availability",
+  "Channels",
+  "Leads",
+  "Agent",
+  "Knowledge",
+] as const;
 
-export type OnboardingStepIndex = 0 | 1 | 2;
+export const LEVVI_STEP_COUNT = ONBOARDING_STEP_LABELS.length;
+export const LEVVI_LAST_STEP = LEVVI_STEP_COUNT - 1;
 
-export function clampOnboardingStep(value: unknown): OnboardingStepIndex {
+export type OnboardingStepIndex = number;
+
+export function clampOnboardingStep(value: unknown): number {
   const n = typeof value === "number" ? value : parseInt(String(value), 10);
   if (!Number.isFinite(n) || n < 0) return 0;
-  if (n > 2) return 2;
-  return n as OnboardingStepIndex;
+  if (n > LEVVI_LAST_STEP) return LEVVI_LAST_STEP;
+  return n;
 }
 
 export function readStoredOnboardingStep(
   storage: { getItem(key: string): string | null } = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null }
-): OnboardingStepIndex {
+): number {
   return clampOnboardingStep(storage.getItem(ONBOARDING_STORAGE_KEY) ?? "0");
 }
 
 export function writeStoredOnboardingStep(
-  step: OnboardingStepIndex,
+  step: number,
   storage: { setItem(key: string, value: string): void } = typeof localStorage !== "undefined" ? localStorage : { setItem: () => {} }
 ): void {
   storage.setItem(ONBOARDING_STORAGE_KEY, String(clampOnboardingStep(step)));
@@ -34,13 +47,29 @@ export function clearOnboardingStorage(
 ): void {
   storage.removeItem(ONBOARDING_STORAGE_KEY);
   storage.removeItem(ONBOARDING_FLAG_KEY);
+  storage.removeItem(ONBOARDING_DRAFT_KEY);
 }
 
-/**
- * Whether the SDR onboarding wizard should be shown.
- * Admins never see it. Only users with onboardingComplete === false.
- * (Column defaults true so legacy accounts skip; register sets false.)
- */
+export function readOnboardingDraft(
+  storage: { getItem(key: string): string | null } = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null }
+): Record<string, unknown> {
+  try {
+    const raw = storage.getItem(ONBOARDING_DRAFT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeOnboardingDraft(
+  draft: Record<string, unknown>,
+  storage: { setItem(key: string, value: string): void } = typeof localStorage !== "undefined" ? localStorage : { setItem: () => {} }
+): void {
+  storage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft || {}));
+}
+
 export function shouldShowOnboarding(user: {
   role?: string | null;
   onboardingComplete?: boolean | null;
@@ -50,14 +79,12 @@ export function shouldShowOnboarding(user: {
   return user.onboardingComplete === false;
 }
 
-/** Step 1 is done once the workspace subscription is active. */
 export function isSubscribeStepComplete(billing: {
   sdr?: { isActive?: boolean } | null;
 } | null | undefined): boolean {
   return !!billing?.sdr?.isActive;
 }
 
-/** Step 2 requires core SDR config fields. */
 export function isConfigureStepComplete(config: {
   systemPrompt?: string | null;
   smsTemplate?: string | null;
@@ -73,9 +100,54 @@ export function isConfigureStepComplete(config: {
   );
 }
 
-/** Step 3 done when SDR agent isActive. */
 export function isActivateStepComplete(config: {
   isActive?: boolean | null;
 } | null | undefined): boolean {
   return !!config?.isActive;
+}
+
+export function isBusinessDraftComplete(draft: {
+  companyName?: string | null;
+  industry?: string | null;
+} | null | undefined): boolean {
+  return !!(draft?.companyName?.trim() && draft?.industry?.trim());
+}
+
+export function isAvailabilityDraftComplete(draft: {
+  timezone?: string | null;
+  weekdayStart?: string | null;
+  weekdayEnd?: string | null;
+} | null | undefined): boolean {
+  return !!(draft?.timezone?.trim() && draft?.weekdayStart && draft?.weekdayEnd);
+}
+
+export function isKbStepComplete(config: {
+  knowledgeBase?: string | null;
+} | null | undefined): boolean {
+  return !!(config?.knowledgeBase && String(config.knowledgeBase).trim().length >= 40);
+}
+
+export function firstIncompleteLevviStep(input: {
+  draft?: Record<string, unknown>;
+  billing?: { sdr?: { isActive?: boolean } | null } | null;
+  config?: {
+    systemPrompt?: string | null;
+    smsTemplate?: string | null;
+    emailSubject?: string | null;
+    emailBody?: string | null;
+    knowledgeBase?: string | null;
+    isActive?: boolean | null;
+  } | null;
+  leadCount?: number;
+} = {}): number {
+  const draft = input.draft || {};
+  const config = input.config || null;
+  const leadCount = input.leadCount || 0;
+
+  if (!isBusinessDraftComplete(draft as { companyName?: string; industry?: string })) return 2;
+  if (!isAvailabilityDraftComplete(draft as { timezone?: string; weekdayStart?: string; weekdayEnd?: string })) return 3;
+  if (leadCount <= 0 && !draft.leadsSkipped) return 5;
+  if (!isConfigureStepComplete(config)) return 6;
+  if (!isKbStepComplete(config) && !draft.kbSkipped) return 7;
+  return LEVVI_LAST_STEP;
 }

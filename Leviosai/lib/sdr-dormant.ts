@@ -94,6 +94,14 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
         )
       );
 
+    let servicePaused = false;
+    try {
+      const { isOrgServicePaused } = await import("./commercial-pricing-service.js");
+      servicePaused = await isOrgServicePaused(workspace.organizationId);
+    } catch {
+      /* non-fatal */
+    }
+
     for (const lead of dormantLeads) {
       const latest = await getLatestEnrollment(config.workspaceId, lead.id);
       const decision = evaluateEnrollmentEligibility({
@@ -107,6 +115,7 @@ export async function scanDormantLeads(): Promise<ScanDormantResult> {
         workspace: {
           isActive: workspace.isActive,
           monthlyLeadsUsed: workspace.monthlyLeadsUsed + enrolledThisWorkspace,
+          servicePaused,
         },
         dormantDays: config.dormantDays,
         requireDormant: true,

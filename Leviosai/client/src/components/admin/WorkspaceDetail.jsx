@@ -179,6 +179,9 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
   const [apptOn, setApptOn] = useState(true);
   const [apptRate, setApptRate] = useState("");
   const [pricingMsg, setPricingMsg] = useState("");
+  const [billingCadence, setBillingCadence] = useState("per_appointment");
+  const [pauseExempt, setPauseExempt] = useState(false);
+  const [paymentPlanApproved, setPaymentPlanApproved] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -192,6 +195,7 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
       setEnrollments(e?.data || []);
       const cp = d?.commercialPricing;
       const pd = d?.platformDefaults;
+      const sp = d?.servicePause;
       if (cp) {
         setMonthlyOn(true);
         setApptOn(!!cp.appointmentFeeEnabled);
@@ -206,6 +210,11 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
         setMonthlyOn(true);
         setApptOn(false);
         setApptRate("");
+      }
+      if (sp) {
+        setBillingCadence(sp.billingCadence || "per_appointment");
+        setPauseExempt(!!sp.pauseExempt);
+        setPaymentPlanApproved(!!sp.paymentPlanApproved);
       }
     } catch (e) {
       setErr(e.message || "Failed to load workspace");
@@ -266,6 +275,9 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
         clearMonthlyOverride: useGlobalMonthly,
         monthlyFeeOverrideCents: useGlobalMonthly ? null : toCents(monthlyOverride),
         appointmentFeeEnabled: apptOn,
+        billingCadence,
+        pauseExempt,
+        paymentPlanApproved,
       };
       if (apptOn) {
         const cents = toCents(apptRate);
@@ -426,7 +438,7 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
               </label>
               <div>
                 <label htmlFor={`appt-rate-${workspaceId}`} style={{ display: "block", fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
-                  Per-appointment rate (USD)
+                  Per-appointment* rate (USD)
                 </label>
                 <input
                   id={`appt-rate-${workspaceId}`}
@@ -437,7 +449,54 @@ export function WorkspaceDetail({ workspaceId, onBack, onChanged }) {
                   placeholder="400"
                   disabled={!apptOn || busy}
                 />
+                <p style={{ margin: "6px 0 0", fontSize: 11, color: COLORS.textMuted, lineHeight: 1.4 }}>
+                  * Per-appointment fees may be billed per booking, or collected on a weekly or monthly cadence at Leviosa Labs’ discretion.
+                </p>
               </div>
+              <div>
+                <label htmlFor={`cadence-${workspaceId}`} style={{ display: "block", fontSize: 12, color: COLORS.textMuted, marginBottom: 6, fontWeight: 600 }}>
+                  Billing cadence
+                </label>
+                <select
+                  id={`cadence-${workspaceId}`}
+                  style={{ ...S.input, maxWidth: 260, minHeight: 44 }}
+                  value={billingCadence}
+                  onChange={(e) => setBillingCadence(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="per_appointment">Per appointment</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, minHeight: 40 }}>
+                <input
+                  type="checkbox"
+                  checked={paymentPlanApproved}
+                  onChange={(e) => {
+                    setPaymentPlanApproved(e.target.checked);
+                    if (e.target.checked) setPauseExempt(true);
+                  }}
+                  disabled={busy}
+                  style={{ width: 18, height: 18 }}
+                />
+                Approved weekly/monthly payment plan
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, minHeight: 40 }}>
+                <input
+                  type="checkbox"
+                  checked={pauseExempt}
+                  onChange={(e) => setPauseExempt(e.target.checked)}
+                  disabled={busy}
+                  style={{ width: 18, height: 18 }}
+                />
+                Skip auto-pause on failed payment
+              </label>
+              {detail.servicePause?.servicePaused && (
+                <div style={{ fontSize: 12, color: COLORS.red, padding: "8px 10px", borderRadius: 8, background: `${COLORS.red}15`, border: `1px solid ${COLORS.red}44` }}>
+                  Service paused{detail.servicePause.pauseReason ? `: ${detail.servicePause.pauseReason}` : ""}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <button type="button" style={{ ...S.btn("primary"), minHeight: 44 }} onClick={saveCommercial} disabled={busy || !detail.organization?.id}>
                   Save commercial rates

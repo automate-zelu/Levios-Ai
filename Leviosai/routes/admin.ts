@@ -533,6 +533,12 @@ router.patch("/api/admin/organizations/:id/commercial-pricing", async (req: Requ
         "appointmentFeeEnabled" in body ? body.appointmentFeeEnabled : undefined,
       costPerAppointmentCents:
         "costPerAppointmentCents" in body ? body.costPerAppointmentCents : undefined,
+      billingCadence: "billingCadence" in body ? body.billingCadence : undefined,
+      paymentPlanApproved:
+        "paymentPlanApproved" in body ? body.paymentPlanApproved : undefined,
+      pauseExempt: "pauseExempt" in body ? body.pauseExempt : undefined,
+      actorUserId: (req as any).userId ?? null,
+      actorLabel: (req as any).userEmail || (req as any).email || "admin",
     });
     res.json(pricing);
   } catch (err: any) {

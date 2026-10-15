@@ -89,15 +89,18 @@ export async function getWorkspaceDetail(workspaceId: string) {
   let commercialPricing = null;
   let recentCharges: any[] = [];
   let platformDefaults = null;
+  let servicePause = null;
   if (org) {
     const {
       getOrgCommercialPricing,
       getPlatformCommercialDefaults,
       listRecentAppointmentCharges,
+      getOrgBillingPauseState,
     } = await import("./commercial-pricing-service.js");
     commercialPricing = await getOrgCommercialPricing(org.id);
     platformDefaults = await getPlatformCommercialDefaults();
     recentCharges = await listRecentAppointmentCharges(org.id, 10);
+    servicePause = await getOrgBillingPauseState(org.id);
   }
 
   return {
@@ -112,10 +115,17 @@ export async function getWorkspaceDetail(workspaceId: string) {
           monthlyFeeEnabled: org.monthlyFeeEnabled,
           monthlyFeeOverrideCents: org.monthlyFeeOverrideCents,
           appointmentFeeEnabled: org.appointmentFeeEnabled,
+          billingCadence: org.billingCadence,
+          paymentPlanApproved: org.paymentPlanApproved,
+          pauseExempt: org.pauseExempt,
+          servicePaused: org.servicePaused,
+          pausedAt: org.pausedAt,
+          pauseReason: org.pauseReason,
         }
       : null,
     commercialPricing,
     platformDefaults,
+    servicePause,
     recentCharges,
     sdrConfig: config
       ? {

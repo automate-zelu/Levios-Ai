@@ -2,18 +2,30 @@ import { useEffect, useState } from "react";
 import { COLORS, S } from "../theme.js";
 import {
   ONBOARDING_STEP_LABELS,
+  LEVVI_LAST_STEP,
   clampOnboardingStep,
   readStoredOnboardingStep,
   writeStoredOnboardingStep,
   clearOnboardingStorage,
+  readOnboardingDraft,
+  writeOnboardingDraft,
+  firstIncompleteLevviStep,
 } from "../lib/onboarding.js";
-import { OnboardingStep1 } from "../components/onboarding/OnboardingStep1.jsx";
+import { leadsApi, sdrApi, billingApi } from "../api.js";
 import { OnboardingStep2 } from "../components/onboarding/OnboardingStep2.jsx";
-import { OnboardingStep3 } from "../components/onboarding/OnboardingStep3.jsx";
+import {
+  LevviWelcome,
+  LevviExplain,
+  LevviBusiness,
+  LevviAvailability,
+  LevviChannels,
+  LevviImportLeads,
+  LevviKnowledge,
+} from "../components/onboarding/LevviSteps.jsx";
 
 function BrandMark() {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
       <span
         style={{
           fontFamily: "Outfit, sans-serif",
@@ -25,8 +37,9 @@ function BrandMark() {
           WebkitTextFillColor: "transparent",
         }}
       >
-        Leviosai
+        Levvi
       </span>
+      <span style={{ fontSize: 11, color: COLORS.textDim, fontWeight: 500 }}>× Catalyst</span>
     </div>
   );
 }
@@ -41,8 +54,8 @@ function ProgressBar({ step }) {
           style={{
             height: 2,
             flex: 1,
-            minWidth: 24,
-            maxWidth: 64,
+            minWidth: 8,
+            maxWidth: 28,
             background: i <= step ? COLORS.orange : COLORS.border,
             transition: "background 0.3s",
           }}
@@ -52,32 +65,36 @@ function ProgressBar({ step }) {
     const done = i < step;
     const active = i === step;
     dots.push(
-      <div key={`dot-${i}`} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+      <div key={`dot-${i}`} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
         <div
           style={{
-            width: 34,
-            height: 34,
+            width: 26,
+            height: 26,
             borderRadius: "50%",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             fontWeight: 700,
-            fontSize: 13,
+            fontSize: 11,
             background: done ? COLORS.orange : active ? COLORS.orangeGlow : COLORS.surfaceAlt,
             color: done ? "#fff" : active ? COLORS.orange : COLORS.textMuted,
             border: `2px solid ${done || active ? COLORS.orange : COLORS.border}`,
             transition: "all 0.3s",
             flexShrink: 0,
           }}
+          title={label}
         >
           {done ? "✓" : i + 1}
         </div>
         <div
           style={{
-            fontSize: 10,
+            fontSize: 9,
             color: active ? COLORS.orange : done ? COLORS.textMuted : COLORS.textDim,
             fontWeight: active ? 600 : 400,
             whiteSpace: "nowrap",
+            maxWidth: 56,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           {label}
@@ -86,31 +103,88 @@ function ProgressBar({ step }) {
     );
   });
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 0, marginBottom: 28 }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        gap: 0,
+        marginBottom: 24,
+        overflowX: "auto",
+        paddingBottom: 4,
+      }}
+    >
       {dots}
     </div>
   );
 }
 
 /**
- * 3-step SDR onboarding: Subscribe → Configure → Activate (plan §13.4).
- * Step index persisted in localStorage; completion persisted via /api/auth/onboarding/complete.
+ * P4 Levvi first-login wizard (8 steps).
+ * Progress + draft in localStorage; completion via /api/auth/onboarding/complete.
  */
 export default function SDROnboarding({ user, onComplete }) {
   const [step, setStep] = useState(() => readStoredOnboardingStep());
+  const [draft, setDraft] = useState(() => readOnboardingDraft());
   const [readyToLeave, setReadyToLeave] = useState(false);
+  const [resumed, setResumed] = useState(false);
 
   useEffect(() => {
     writeStoredOnboardingStep(clampOnboardingStep(step));
   }, [step]);
 
+  useEffect(() => {
+    writeOnboardingDraft(draft);
+  }, [draft]);
+
+  // Resume / skip completed steps on return
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [leads, config, billing] = await Promise.all([
+          leadsApi.list().catch(() => []),
+          sdrApi.getConfig().catch(() => null),
+          billingApi.getStatus().catch(() => null),
+        ]);
+        if (cancelled) return;
+        const leadCount = Array.isArray(leads) ? leads.length : leads?.leads?.length || 0;
+        const stored = readStoredOnboardingStep();
+        const incomplete = firstIncompleteLevviStep({
+          draft: readOnboardingDraft(),
+          billing,
+          config,
+          leadCount,
+        });
+        // Skip ahead to first incomplete if user already progressed past intro
+        if (stored > 1 && incomplete > stored) {
+          setStep(incomplete);
+        } else if (stored <= 1 && incomplete > 2) {
+          setStep(incomplete);
+        } else {
+          setStep(stored);
+        }
+      } catch {
+        /* keep stored step */
+      } finally {
+        if (!cancelled) setResumed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const go = (next) => setStep(clampOnboardingStep(next));
+  const updateDraft = (next) => setDraft(next || {});
 
   const handleFinished = () => {
     clearOnboardingStorage();
     setReadyToLeave(true);
     onComplete?.();
   };
+
+  const wide = step === 6 || step === 7;
 
   return (
     <div
@@ -131,14 +205,14 @@ export default function SDROnboarding({ user, onComplete }) {
           background: COLORS.surface,
           border: `1px solid ${COLORS.border}`,
           borderRadius: 20,
-          padding: "32px 36px",
+          padding: "28px 32px",
           width: "100%",
-          maxWidth: step === 1 ? 720 : 560,
+          maxWidth: wide ? 720 : 560,
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
           transition: "max-width 0.25s ease",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <BrandMark />
           <span style={{ fontSize: 11, color: COLORS.textDim, fontWeight: 500 }}>
             Step {step + 1} of {ONBOARDING_STEP_LABELS.length}
@@ -147,37 +221,48 @@ export default function SDROnboarding({ user, onComplete }) {
 
         <ProgressBar step={step} />
 
-        <div style={{ minHeight: 280, maxHeight: "70vh", overflowY: "auto", paddingRight: 4 }}>
-          {step === 0 && (
-            <OnboardingStep1
-              onSubscribed={() => go(1)}
-            />
-          )}
-          {step === 1 && (
-            <OnboardingStep2
-              user={user}
-              onConfigured={() => go(2)}
-            />
-          )}
-          {step === 2 && (
-            <OnboardingStep3
-              onComplete={handleFinished}
-            />
-          )}
-        </div>
+        {!resumed ? (
+          <p role="status" style={{ color: COLORS.textMuted, fontSize: 14 }}>Resuming Levvi setup…</p>
+        ) : (
+          <div style={{ minHeight: 260, maxHeight: "70vh", overflowY: "auto", paddingRight: 4 }}>
+            {step === 0 && <LevviWelcome user={user} onNext={() => go(1)} />}
+            {step === 1 && <LevviExplain onNext={() => go(2)} />}
+            {step === 2 && (
+              <LevviBusiness draft={draft} onDraftChange={updateDraft} onNext={() => go(3)} />
+            )}
+            {step === 3 && (
+              <LevviAvailability draft={draft} onDraftChange={updateDraft} onNext={() => go(4)} />
+            )}
+            {step === 4 && (
+              <LevviChannels onNext={() => go(5)} onSkip={() => go(5)} />
+            )}
+            {step === 5 && (
+              <LevviImportLeads draft={draft} onDraftChange={updateDraft} onNext={() => go(6)} />
+            )}
+            {step === 6 && (
+              <OnboardingStep2
+                user={user}
+                companyHint={draft.companyName}
+                hideKnowledgeBase
+                onConfigured={() => go(7)}
+              />
+            )}
+            {step === 7 && (
+              <LevviKnowledge
+                draft={draft}
+                onDraftChange={updateDraft}
+                onComplete={handleFinished}
+              />
+            )}
+          </div>
+        )}
 
-        {step > 0 && step < 2 && !readyToLeave && (
-          <div style={{ marginTop: 20 }}>
+        {resumed && step > 0 && step < LEVVI_LAST_STEP && !readyToLeave && (
+          <div style={{ marginTop: 18 }}>
             <button type="button" style={S.btn("ghost")} onClick={() => go(step - 1)}>
               ← Back
             </button>
           </div>
-        )}
-
-        {step === 0 && (
-          <p style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 20, textAlign: "center" }}>
-            Welcome{user?.firstName ? `, ${user.firstName}` : ""}. Let&apos;s get your AI SDR live in three steps.
-          </p>
         )}
       </div>
     </div>

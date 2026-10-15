@@ -10,8 +10,10 @@ export interface TierLimits {
   /** Complimentary in-browser test-call minutes per billing period */
   monthlyTestMinuteLimit: number;
   seatLimit: number;
-  /** Display label */
+  /** Display label (product UI) */
   label: string;
+  /** Catalyst marketing name (Ignite / Catalyze / Chain Reaction) */
+  marketingName: string;
   /** Suggested monthly price band (guidance only) */
   priceHint: string;
 }
@@ -22,6 +24,7 @@ export const UNLIMITED = 999_999;
 export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
   starter: {
     label: "Starter",
+    marketingName: "Ignite",
     monthlyLeadLimit: 500,
     monthlyMinuteLimit: 1_000,
     monthlyTestMinuteLimit: 20,
@@ -30,6 +33,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
   },
   growth: {
     label: "Growth",
+    marketingName: "Catalyze",
     monthlyLeadLimit: 2_000,
     monthlyMinuteLimit: 4_000,
     monthlyTestMinuteLimit: 40,
@@ -38,6 +42,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
   },
   scale: {
     label: "Scale",
+    marketingName: "Chain Reaction",
     monthlyLeadLimit: 5_000,
     monthlyMinuteLimit: 10_000,
     monthlyTestMinuteLimit: 60,
@@ -46,6 +51,7 @@ export const TIER_LIMITS: Record<SdrTier, TierLimits> = {
   },
   enterprise: {
     label: "Enterprise",
+    marketingName: "Chain Reaction",
     monthlyLeadLimit: UNLIMITED,
     monthlyMinuteLimit: UNLIMITED,
     monthlyTestMinuteLimit: 60,

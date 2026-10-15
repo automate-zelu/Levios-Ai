@@ -28,6 +28,7 @@ import { handleBrowserTestCallStream } from "./lib/calling/browser-test-session.
 import teamRoutes from "./routes/team.js";
 import calendarRoutes from "./routes/calendar.js";
 import gmailRoutes from "./routes/gmail.js";
+import onboardingIntegrationRoutes from "./routes/onboarding-integration.js";
 import { rebuildAllKnowledgeBases } from "./lib/calling/langchain-kb.js";
 import { Reactor } from "./reactor/reactor.js";
 import { createAllAgents } from "./reactor/agents/index.js";
@@ -62,6 +63,7 @@ app.use("/api", apiLimiter);
 app.use(authRoutes);
 app.use(billingRoutes);
 app.use(webhookRoutes);
+app.use(onboardingIntegrationRoutes);
 app.use(apiRoutes);
 app.use(messagingRoutes);
 app.use(aiRoutes);

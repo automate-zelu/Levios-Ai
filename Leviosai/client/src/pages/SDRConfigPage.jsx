@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { COLORS } from "../theme.js";
 import { sdrApi } from "../api.js";
 import { PromptEditor } from "../components/sdr/PromptEditor.jsx";
@@ -11,6 +11,7 @@ import { SDRAnalytics } from "../components/sdr/SDRAnalytics.jsx";
 import { TierBadge } from "../components/billing/TierBadge.jsx";
 import TestCallStudio from "../components/sdr/TestCallStudio.jsx";
 import AgentStack from "../components/sdr/AgentStack.jsx";
+import { SdrOpsConsole } from "../components/sdr/SdrOpsConsole.jsx";
 import "./sdr-agent.css";
 import "../components/sdr/test-call-studio.css";
 
@@ -43,6 +44,12 @@ function Workbench({ id, tone, title, subtitle, children, split = false }) {
 
 export default function SDRConfigPage({ onNavigateBilling, onTestCallActive }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") === "configure" ? "configure" : "console";
+  const setTab = (next) => {
+    setSearchParams(next === "configure" ? { tab: "configure" } : {}, { replace: true });
+  };
+
   const [config, setConfig] = useState(null);
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -179,7 +186,26 @@ export default function SDRConfigPage({ onNavigateBilling, onTestCallActive }) {
     <>
     <div className="sdr-agent">
       <nav className="sdr-agent-toolbar" aria-label="SDR Agent actions">
-        <div className="sdr-agent-toolbar-label">SDR Agent</div>
+        <div className="sdr-agent-tabs" role="tablist" aria-label="SDR Agent views">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "console"}
+            className={tab === "console" ? "is-on" : ""}
+            onClick={() => setTab("console")}
+          >
+            Console
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "configure"}
+            className={tab === "configure" ? "is-on" : ""}
+            onClick={() => setTab("configure")}
+          >
+            Configure
+          </button>
+        </div>
         <div className="sdr-agent-actions">
           <button
             type="button"
@@ -193,11 +219,22 @@ export default function SDRConfigPage({ onNavigateBilling, onTestCallActive }) {
           <button type="button" className="sdr-agent-btn sdr-agent-btn--ghost" onClick={handleToggle}>
             {config?.isActive ? "Deactivate" : "Activate"}
           </button>
-          {saveButton}
+          {tab === "configure" && saveButton}
         </div>
       </nav>
+
+      {tab === "console" ? (
+        <SdrOpsConsole
+          analytics={analytics}
+          config={config}
+          onOpenConfigure={() => setTab("configure")}
+        />
+      ) : (
+      <>
       <header className="sdr-agent-hero">
-        <p className="sdr-agent-hero-copy">Prompt, knowledge, and follow-ups. Channels stay on SDR Setup.</p>
+        <p className="sdr-agent-hero-copy">
+          One agent for all industries — change knowledge, prompt, and templates. Channels stay on SDR Setup.
+        </p>
         {analytics && (
           <div className="sdr-agent-metrics">
             <div className="sdr-agent-metric">
@@ -324,6 +361,8 @@ export default function SDRConfigPage({ onNavigateBilling, onTestCallActive }) {
           onChange={(key, val) => patchForm((f) => ({ ...f, [key]: val }))}
         />
       </Workbench>
+      </>
+      )}
 
     </div>
     <TestCallStudio

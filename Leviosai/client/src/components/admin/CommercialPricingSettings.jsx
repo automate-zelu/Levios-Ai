@@ -347,7 +347,7 @@ function ClientPricingModal({ client, platform, charges, busy, onClose, onSaved,
           </section>
 
           <section>
-            <p className="pr-label">Per appointment</p>
+            <p className="pr-label">Per appointment*</p>
             <p className="pr-help">
               Turning this off stops new booking charges only. Appointments already billed stay charged at their original amount.
             </p>

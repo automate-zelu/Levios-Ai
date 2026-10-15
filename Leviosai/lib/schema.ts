@@ -63,8 +63,38 @@ export const organizations = pgTable("organizations", {
   monthlyFeeOverrideCents: integer("monthly_fee_override_cents"),
   /** When null, appointment fee defaults to on. */
   appointmentFeeEnabled: boolean("appointment_fee_enabled"),
+  /**
+   * Billing cadence for appointment / usage collection.
+   * per_appointment | weekly | monthly
+   */
+  billingCadence: text("billing_cadence").notNull().default("per_appointment"),
+  /** Admin-approved weekly/monthly payment plan (skips auto-pause with pauseExempt). */
+  paymentPlanApproved: boolean("payment_plan_approved").notNull().default(false),
+  /** When true, payment_failed does not auto-pause outbound AI. */
+  pauseExempt: boolean("pause_exempt").notNull().default(false),
+  /** Soft pause: blocks outbound SDR call/SMS/email; CRM read-only remains OK. */
+  servicePaused: boolean("service_paused").notNull().default(false),
+  pausedAt: timestamp("paused_at"),
+  pauseReason: text("pause_reason"),
   reactorEnabled: boolean("reactor_enabled").default(false),
   reactorConfig: text("reactor_config"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+// ─── USAGE EVENTS (hybrid metering ledger) ──────────────────────────────────
+export const usageEvents = pgTable("usage_events", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  workspaceId: uuid("workspace_id"),
+  /** appointment_booked | call_minutes | sms_ai | email_ai | ai_tokens */
+  meterId: text("meter_id").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  /** Optional cost in cents when billable; 0 when included in retainer. */
+  costCents: integer("cost_cents").notNull().default(0),
+  periodKey: text("period_key"),
+  metadata: text("metadata"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 

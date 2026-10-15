@@ -60,6 +60,7 @@ export function KnowledgeBaseInput({ value, onChange, saving, onSave, bare = fal
       ) : null}
       <p className={bare ? "sdr-agent-help" : undefined} style={bare ? undefined : { color: COLORS.textMuted, fontSize: 12, marginBottom: 10 }}>
         Paste notes or upload PDF / Word / text. Uploads extract text and index it for live calls.
+        Industry differences (solar, HVAC, roofing, etc.) belong here — same agent UI, different knowledge.
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>

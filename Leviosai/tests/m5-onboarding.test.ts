@@ -11,22 +11,34 @@ import {
   clearOnboardingStorage,
   ONBOARDING_STORAGE_KEY,
   ONBOARDING_FLAG_KEY,
+  ONBOARDING_DRAFT_KEY,
   ONBOARDING_STEP_LABELS,
+  LEVVI_LAST_STEP,
 } from "../lib/onboarding.js";
 
-describe("M5 onboarding helpers", () => {
-  it("exposes three step labels", () => {
-    assert.equal(ONBOARDING_STEP_LABELS.length, 3);
-    assert.deepEqual([...ONBOARDING_STEP_LABELS], ["Subscribe", "Configure SDR", "Activate"]);
+describe("M5 / P4 Levvi onboarding helpers", () => {
+  it("exposes eight Levvi step labels", () => {
+    assert.equal(ONBOARDING_STEP_LABELS.length, 8);
+    assert.deepEqual([...ONBOARDING_STEP_LABELS], [
+      "Welcome",
+      "Catalyst",
+      "Business",
+      "Availability",
+      "Channels",
+      "Leads",
+      "Agent",
+      "Knowledge",
+    ]);
+    assert.equal(LEVVI_LAST_STEP, 7);
   });
 
-  it("clamps step indices to 0–2", () => {
+  it("clamps step indices to 0–7", () => {
     assert.equal(clampOnboardingStep(-1), 0);
     assert.equal(clampOnboardingStep(0), 0);
-    assert.equal(clampOnboardingStep(1), 1);
-    assert.equal(clampOnboardingStep(2), 2);
-    assert.equal(clampOnboardingStep(99), 2);
-    assert.equal(clampOnboardingStep("1"), 1);
+    assert.equal(clampOnboardingStep(4), 4);
+    assert.equal(clampOnboardingStep(7), 7);
+    assert.equal(clampOnboardingStep(99), 7);
+    assert.equal(clampOnboardingStep("3"), 3);
     assert.equal(clampOnboardingStep("nope"), 0);
   });
 
@@ -79,13 +91,15 @@ describe("M5 onboarding helpers", () => {
       },
     };
 
-    writeStoredOnboardingStep(1, storage);
-    assert.equal(mem[ONBOARDING_STORAGE_KEY], "1");
-    assert.equal(readStoredOnboardingStep(storage), 1);
+    writeStoredOnboardingStep(5, storage);
+    assert.equal(mem[ONBOARDING_STORAGE_KEY], "5");
+    assert.equal(readStoredOnboardingStep(storage), 5);
 
     mem[ONBOARDING_FLAG_KEY] = "1";
+    mem[ONBOARDING_DRAFT_KEY] = "{}";
     clearOnboardingStorage(storage);
     assert.equal(mem[ONBOARDING_STORAGE_KEY], undefined);
     assert.equal(mem[ONBOARDING_FLAG_KEY], undefined);
+    assert.equal(mem[ONBOARDING_DRAFT_KEY], undefined);
   });
 });

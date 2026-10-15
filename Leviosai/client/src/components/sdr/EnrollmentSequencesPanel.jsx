@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { COLORS, S } from "../../theme.js";
 import { sdrApi } from "../../api.js";
 import { SdrFlowTimeline, STATUS_COLORS, groupLogsByDial, sliceDialFlow } from "./SdrFlowTimeline.jsx";
@@ -8,6 +9,7 @@ import { SdrFlowTimeline, STATUS_COLORS, groupLogsByDial, sliceDialFlow } from "
  * Each dial attempt is shown separately — stuck recoveries are hidden.
  */
 export function EnrollmentSequencesPanel() {
+  const navigate = useNavigate();
   const [enrollments, setEnrollments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -217,6 +219,17 @@ export function EnrollmentSequencesPanel() {
                     <span style={S.badge(STATUS_COLORS[selected?.status || detail?.enrollment?.status] || COLORS.textMuted)}>
                       {selected?.status || detail?.enrollment?.status || "—"}
                     </span>
+                    {(selected?.leadId || detail?.lead?.id) && (
+                      <button
+                        type="button"
+                        style={{ ...S.btn("ghost"), padding: "6px 12px", fontSize: 12 }}
+                        onClick={() =>
+                          navigate(`/leads/${selected?.leadId || detail?.lead?.id}?tab=timeline`)
+                        }
+                      >
+                        Open timeline
+                      </button>
+                    )}
                   </div>
                 </div>
 

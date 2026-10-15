@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { isAdminAppPath, parseAdminLocation, safeAdminNext } from "./lib/admin-routes.js";
 import _ from "lodash";
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
-import { auth, setToken, clearToken, isAuthenticated, dashboard, leadsApi, appointmentsApi, campaignsApi, proposalsApi, activityApi, messagesApi, messagingApi, aiApi, sandboxApi, settingsApi, sdrApi, callApi, calendarApi } from "./api.js";
+import { auth, setToken, clearToken, isAuthenticated, exchangeOnboardingHandoff, dashboard, leadsApi, appointmentsApi, campaignsApi, proposalsApi, activityApi, messagesApi, messagingApi, aiApi, sandboxApi, settingsApi, sdrApi, callApi, calendarApi, billingApi } from "./api.js";
 import { INTEGRATION_CATEGORIES, integrationsService, MOCK_BILLING } from "./services.js";
 import SDRConfigPage from "./pages/SDRConfigPage.jsx";
 import CallingPanelPage from "./pages/CallingPanelPage.jsx";
@@ -17,8 +17,19 @@ import LeadDetailPage from "./pages/LeadDetailPage.jsx";
 import BookingsPage from "./pages/BookingsPage.jsx";
 import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
+import {
+  applyHandoffPrefill,
+  readHandoffCodeFromSearch,
+  stripHandoffFromUrl,
+} from "./lib/handoff-landing.js";
 import { providerFromIntegrationId } from "./lib/calendar-providers.js";
 import LeadEditDrawer from "./components/leads/LeadEditDrawer.jsx";
+import {
+  mapActivityToFeed,
+  mapCallSessionsToReplay,
+  mapMessagesToReplay,
+} from "./lib/conversation-replay.js";
+import { canAccessSandbox } from "./lib/sandbox-access.js";
 
 // ============================================================
 // CATALYST — Agentic AI Sales & Lead Revival Platform
@@ -590,15 +601,6 @@ function VoicePreviewButton({ voiceName, voiceGender, accent, sample, fullWidth 
   );
 }
 
-function ComplianceBadge() {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 6, background: `${COLORS.green}15`, border: `1px solid ${COLORS.green}33` }}>
-      <span style={{ color: COLORS.green, fontSize: 12 }}>🛡️</span>
-      <span style={{ fontSize: 11, color: COLORS.green, fontWeight: 600 }}>TCPA Compliant</span>
-    </div>
-  );
-}
-
 // FEATURE 5: Performance-based tier suggestion banner
 function TierSuggestionBanner({ totalAppts, hasAliv, hasSalesTool, onAction }) {
   let suggestion = null;
@@ -1034,28 +1036,30 @@ function DashboardPage({ setPage }) {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const totalAppts = stats?.upcomingAppointments?.length || 0;
-  const revivalData = [
-    { month: "Oct", revived: 45, appts: 15, closed: 4 },
-    { month: "Nov", revived: 62, appts: 21, closed: 7 },
-    { month: "Dec", revived: 58, appts: 19, closed: 8 },
-    { month: "Jan", revived: 78, appts: 26, closed: 11 },
-    { month: "Feb", revived: 91, appts: 30, closed: 13 },
-    { month: "Mar", revived: 104, appts: 34, closed: 16 },
-  ];
-  const channelData = [
-    { name: "Voice AI", value: 38 }, { name: "SMS/Text", value: 35 },
-    { name: "Email", value: 22 }, { name: "Omnichannel", value: 5 },
-  ];
   const channelColors = [COLORS.orange, COLORS.blue, COLORS.green, COLORS.purple];
-  const recentActivity = [
-    { time: "2 min ago", action: "Voice AI set appointment", lead: "Robert Taylor", result: "success" },
-    { time: "18 min ago", action: "SMS revived lead", lead: "David Chen", result: "success" },
-    { time: "34 min ago", action: "Email follow-up sent", lead: "Michael Brown", result: "pending" },
-    { time: "1 hr ago", action: "No-show detected — $200 credit applied", lead: "Marcus Johnson", result: "credit" },
-    { time: "1.5 hrs ago", action: "New lead scraped & qualified", lead: "Jennifer Adams", result: "success" },
-    { time: "2 hrs ago", action: "Proposal viewed by customer", lead: "Sandra Wilson", result: "success" },
-    { time: "3 hrs ago", action: "Lead score boosted +5 (market change)", lead: "David Chen", result: "boost" },
+  // Real org activity only — never show SAMPLE_* / demo feed on a live account.
+  const recentActivity = mapActivityToFeed(activity);
+
+  // Real metrics only — no fabricated trend/channel charts for empty accounts.
+  const pipelineBars = [
+    { name: "Leads", value: Number(stats?.totalLeads) || 0 },
+    { name: "Hot", value: Number(stats?.hotLeads) || 0 },
+    { name: "Won", value: Number(stats?.wonDeals) || 0 },
+    { name: "Upcoming", value: totalAppts },
   ];
+  const hasPipelineSignal = pipelineBars.some((b) => b.value > 0);
+  const callTotal = Number(callAnalytics?.totalCalls) || 0;
+  const sdrBooked = Number(sdrAnalytics?.booked) || 0;
+  const sdrActive = Number(sdrAnalytics?.active) || 0;
+  const channelData = [
+    { name: "AI Calls", value: callTotal },
+    { name: "SDR Bookings", value: sdrBooked },
+    { name: "Active sequences", value: sdrActive },
+  ].filter((d) => d.value > 0);
+  const answerRate =
+    callAnalytics?.answerRate != null && Number.isFinite(Number(callAnalytics.answerRate))
+      ? Math.round(Number(callAnalytics.answerRate))
+      : null;
 
   if (loading) return <LoadingState message="Loading dashboard..." />;
   if (error) return <ErrorState message={error} onRetry={fetchData} />;
@@ -1065,26 +1069,22 @@ function DashboardPage({ setPage }) {
       <div className="page-header">
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Dashboard</h2>
-          <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>Welcome back. Here's your performance overview.</p>
+          <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+            Pipeline health, appointments, and agent activity for this workspace.
+          </p>
         </div>
         <button
-          onClick={() => setPage("Sandbox")}
+          onClick={() => setPage("Bookings")}
           style={{
             background: `linear-gradient(135deg, ${COLORS.orange}, ${COLORS.orangeDark})`,
             color: "#fff", border: "none", borderRadius: 10, padding: "12px 24px",
             fontSize: 14, fontWeight: 600, cursor: "pointer", letterSpacing: 0.3,
             boxShadow: `0 4px 20px ${COLORS.orangeGlow}`,
-            transition: "transform 0.15s, box-shadow 0.15s",
           }}
-          onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = `0 6px 28px ${COLORS.orangeGlow}`; }}
-          onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = `0 4px 20px ${COLORS.orangeGlow}`; }}
         >
-          See me in action
+          Open calendar
         </button>
       </div>
-
-      {/* FEATURE 5: Performance tier suggestion */}
-      <TierSuggestionBanner totalAppts={totalAppts} hasAliv={true} hasSalesTool={false} onAction={(t) => setPage(t === "sales" ? "Proposals & Sales" : "Billing")} />
 
       <div className="grid-stats" style={{ marginBottom: 24 }}>
         <StatCard label="Total Leads" value={stats?.totalLeads || 0} color={COLORS.orange} icon="🔥"
@@ -1097,8 +1097,14 @@ function DashboardPage({ setPage }) {
           onClick={() => setDrill({ title: "Pipeline Value", description: "Active leads contributing to pipeline", filter: {} })} />
         <StatCard label="Won Revenue" value={`$${((stats?.wonRevenue || 0) / 1000).toFixed(0)}K`} color={COLORS.yellow} icon="💸"
           onClick={() => setDrill({ title: "Won Revenue Breakdown", description: "Revenue-generating closed deals", filter: { status: "qualified" }, emptyText: "No won revenue yet." })} />
-        <StatCard label="Show-Up Rate" value="87" suffix="%" change={3.2} color={COLORS.purple} icon="✅"
-          onClick={() => setPage("Appointments")} />
+        <StatCard
+          label="Call Answer Rate"
+          value={answerRate != null ? String(answerRate) : "—"}
+          suffix={answerRate != null ? "%" : ""}
+          color={COLORS.purple}
+          icon="✅"
+          onClick={() => setPage("AI Calling")}
+        />
       </div>
 
       {drill && (
@@ -1113,42 +1119,61 @@ function DashboardPage({ setPage }) {
 
       <div className="grid-dashboard-charts" style={{ marginBottom: 20 }}>
         <div style={S.card}>
-          <div style={S.cardHeader}><span>Revival & Appointment Trends</span><span style={{ fontSize: 11, color: COLORS.textMuted }}>Last 6 months</span></div>
-          <ResponsiveContainer width="100%" height={240}>
-            <AreaChart data={revivalData}>
-              <defs>
-                <linearGradient id="gR" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={COLORS.orange} stopOpacity={0.3} /><stop offset="100%" stopColor={COLORS.orange} stopOpacity={0} /></linearGradient>
-                <linearGradient id="gA" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={COLORS.green} stopOpacity={0.3} /><stop offset="100%" stopColor={COLORS.green} stopOpacity={0} /></linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
-              <XAxis dataKey="month" stroke={COLORS.textDim} fontSize={11} />
-              <YAxis stroke={COLORS.textDim} fontSize={11} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
-              <Area type="monotone" dataKey="revived" stroke={COLORS.orange} fill="url(#gR)" strokeWidth={2} name="Revived" />
-              <Area type="monotone" dataKey="appts" stroke={COLORS.green} fill="url(#gA)" strokeWidth={2} name="Appts Set" />
-              <Line type="monotone" dataKey="closed" stroke={COLORS.purple} strokeWidth={2} dot={{ r: 3 }} name="Deals Closed" />
-            </AreaChart>
-          </ResponsiveContainer>
+          <div style={S.cardHeader}><span>Pipeline snapshot</span><span style={{ fontSize: 11, color: COLORS.textMuted }}>Live counts</span></div>
+          {hasPipelineSignal ? (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={pipelineBars}>
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                <XAxis dataKey="name" stroke={COLORS.textDim} fontSize={11} />
+                <YAxis stroke={COLORS.textDim} fontSize={11} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
+                <Bar dataKey="value" fill={COLORS.orange} radius={[6, 6, 0, 0]} name="Count" />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <EmptyState icon="📊" title="No pipeline data yet" description="Import leads or book appointments to see live charts here." />
+          )}
         </div>
         <div style={S.card}>
-          <div style={S.cardHeader}>Outreach Channels</div>
-          <ResponsiveContainer width="100%" height={180}>
-            <PieChart><Pie data={channelData} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value">{channelData.map((_, i) => <Cell key={i} fill={channelColors[i]} />)}</Pie><Tooltip contentStyle={{ background: "#1e1e1e", border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12, color: COLORS.text }} itemStyle={{ color: COLORS.text }} /></PieChart>
-          </ResponsiveContainer>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
-            {channelData.map((d, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
-                <div style={{ width: 8, height: 8, borderRadius: 2, background: channelColors[i] }} /><span style={{ color: COLORS.textMuted }}>{d.name} ({d.value}%)</span>
+          <div style={S.cardHeader}>Agent activity mix</div>
+          {channelData.length > 0 ? (
+            <>
+              <ResponsiveContainer width="100%" height={180}>
+                <PieChart>
+                  <Pie data={channelData} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value">
+                    {channelData.map((_, i) => (
+                      <Cell key={i} fill={channelColors[i % channelColors.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: "#1e1e1e", border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12, color: COLORS.text }} itemStyle={{ color: COLORS.text }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center" }}>
+                {channelData.map((d, i) => (
+                  <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
+                    <div style={{ width: 8, height: 8, borderRadius: 2, background: channelColors[i % channelColors.length] }} />
+                    <span style={{ color: COLORS.textMuted }}>{d.name} ({d.value})</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          ) : (
+            <EmptyState icon="📡" title="No agent activity yet" description="Calls and SDR bookings will appear here once outreach starts." />
+          )}
         </div>
       </div>
 
       <div className="grid-2col">
         <div style={S.card}>
-          <div style={S.cardHeader}><span>Recent Activity</span><span style={{ fontSize: 12, color: COLORS.orange, cursor: "pointer" }} onClick={() => setPage("Conversation Replay")}>View All →</span></div>
-          {recentActivity.map((a, i) => (
+          <div style={S.cardHeader}>
+            <span>Recent Activity</span>
+            <span style={{ fontSize: 12, color: COLORS.orange, cursor: "pointer" }} onClick={() => setPage("Leads")}>
+              Open leads →
+            </span>
+          </div>
+          {recentActivity.length === 0 ? (
+            <EmptyState icon="📭" title="No activity yet" description="Calls, SMS, and bookings for this account will show up here." />
+          ) : recentActivity.map((a, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < recentActivity.length - 1 ? `1px solid ${COLORS.border}22` : "none" }}>
               <div style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0,
                 background: a.result === "success" ? COLORS.green : a.result === "credit" ? COLORS.yellow : a.result === "boost" ? COLORS.teal : a.result === "declined" ? COLORS.red : COLORS.yellow }} />
@@ -1161,36 +1186,38 @@ function DashboardPage({ setPage }) {
         </div>
 
         <div style={S.card}>
-          <div style={S.cardHeader}><span>Goal Tracking</span><ComplianceBadge /></div>
-          {[
-            { label: "Lead Revival Rate", current: 15.2, target: 15, color: COLORS.green, met: true },
-            { label: "Revived → Appt Set", current: 32.7, target: 33, color: COLORS.orange, met: false },
-            { label: "Monthly Appt Target", current: 34, target: 40, color: COLORS.blue, met: false },
-            { label: "Show-Up Rate", current: 87, target: 80, color: COLORS.teal, met: true },
-          ].map((g, i) => (
-            <div key={i} style={{ marginBottom: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 13 }}>{g.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.orange }}>{g.current}{typeof g.target === "number" && g.target <= 100 ? "%" : ""} / {g.target}{typeof g.target === "number" && g.target <= 100 ? "%" : ""}</span>
+          <div style={S.cardHeader}><span>Upcoming appointments</span></div>
+          {(stats?.upcomingAppointments || []).length === 0 ? (
+            <EmptyState
+              icon="📅"
+              title="No appointments yet"
+              description="When the agent books a meeting, it will show up here and on the calendar."
+              action="Open calendar"
+              onAction={() => setPage("Bookings")}
+            />
+          ) : (
+            (stats.upcomingAppointments || []).slice(0, 6).map((appt, i) => (
+              <div
+                key={appt.id || i}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "10px 0",
+                  borderBottom: i < Math.min(6, stats.upcomingAppointments.length) - 1 ? `1px solid ${COLORS.border}22` : "none",
+                  fontSize: 13,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600 }}>{appt.title || "Appointment"}</div>
+                  <div style={{ fontSize: 11, color: COLORS.textMuted }}>
+                    {appt.scheduledAt ? new Date(appt.scheduledAt).toLocaleString() : "—"}
+                  </div>
+                </div>
+                <span style={S.badge(COLORS.green)}>{appt.status || "scheduled"}</span>
               </div>
-              <ProgressBar value={g.current} max={g.target} color={g.color} height={8} />
-              <div style={{ fontSize: 11, color: g.met ? COLORS.green : COLORS.yellow, marginTop: 4 }}>{g.met ? "✓ Goal exceeded" : "⟳ In progress"}</div>
-            </div>
-          ))}
-          {/* FEATURE 1: Show-up guarantee highlight */}
-          <div style={{ marginTop: 12, padding: 14, background: `${COLORS.teal}12`, borderRadius: 8, border: `1px solid ${COLORS.teal}33` }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.teal, marginBottom: 4 }}>🛡️ Show-Up Guarantee Active</div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              3 no-shows this month → $600 in credits applied to your invoice. You only pay full price for appointments that happen.
-            </div>
-          </div>
-          <div style={{ marginTop: 12, padding: 14, background: COLORS.orangeGlow, borderRadius: 8, border: `1px solid ${COLORS.orange}33` }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.orangeLight, marginBottom: 4 }}>💡 AI Suggestion</div>
-            <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              {/* FEATURE 3: Score decay intelligence */}
-              4 leads have scores decaying rapidly. Market conditions (utility rate hike +12%) triggered score boosts for 8 leads in your area. Recommend immediate outreach to these re-scored leads for optimal revival window.
-            </div>
-          </div>
+            ))
+          )}
         </div>
       </div>
 
@@ -1787,7 +1814,7 @@ function CampaignsPage() {
       </div>
 
       <div style={S.card}>
-        <div style={S.cardHeader}><span>{activeProduct === "riiviv" ? "riivīv" : "alīv"} Campaigns</span><ComplianceBadge /></div>
+        <div style={S.cardHeader}><span>{activeProduct === "riiviv" ? "riivīv" : "alīv"} Campaigns</span></div>
         <div className="table-responsive">
         <table style={S.table}>
           <thead><tr><th style={S.th}>Campaign</th><th style={S.th}>Status</th><th style={S.th}>Leads</th><th style={S.th} className="hide-mobile">Contacted</th>{activeProduct === "riiviv" && <th style={S.th} className="hide-mobile">Revived</th>}<th style={S.th}>Appts</th><th style={S.th} className="hide-mobile">Channel</th><th style={S.th} className="hide-mobile">Started</th></tr></thead>
@@ -1852,12 +1879,22 @@ function ProposalsPage() {
   const [proposals, setProposals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedProposal, setSelectedProposal] = useState(null);
-  const [whiteLabel, setWhiteLabel] = useState({ companyName: "SunPower Solar Solutions", primaryColor: "#e67e22", logoUploaded: true });
   const [showNewProposal, setShowNewProposal] = useState(false);
-  const [newProposalForm, setNewProposalForm] = useState({ leadId: "", title: "", amount: "" });
+  const [newProposalForm, setNewProposalForm] = useState({
+    leadId: "",
+    title: "",
+    amount: "",
+    packageType: "standard",
+  });
   const [newProposalError, setNewProposalError] = useState(null);
   const [newProposalSaving, setNewProposalSaving] = useState(false);
   const [leads, setLeads] = useState([]);
+
+  const PACKAGE_OPTIONS = [
+    { id: "standard", label: "Standard package" },
+    { id: "premium", label: "Premium package" },
+    { id: "custom", label: "Custom quote" },
+  ];
 
   const fetchProposals = useCallback(() => {
     setLoading(true);
@@ -1881,7 +1918,7 @@ function ProposalsPage() {
 
   const closeProposal = async (p) => {
     try {
-      const updated = await proposalsApi.update(p.id, { status: "accepted" });
+      await proposalsApi.update(p.id, { status: "accepted" });
       setProposals(prev => prev.map(x => x.id === p.id ? { ...x, status: "accepted" } : x));
     } catch (err) {
       alert("Failed to update: " + err.message);
@@ -1894,11 +1931,22 @@ function ProposalsPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <div><h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Proposals & Sales</h2><p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>AI-powered proposals with white-label branding</p></div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <span style={S.badge(COLORS.purple)}>✨ Premium Feature</span>
-          <button style={S.btn("primary")} onClick={() => { setNewProposalForm({ leadId: "", title: "", amount: "" }); setNewProposalError(null); setShowNewProposal(true); }}>+ New Proposal</button>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Proposals</h2>
+          <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+            Create and send quotes — industry specifics come from your templates and knowledge base.
+          </p>
         </div>
+        <button
+          style={S.btn("primary")}
+          onClick={() => {
+            setNewProposalForm({ leadId: "", title: "", amount: "", packageType: "standard" });
+            setNewProposalError(null);
+            setShowNewProposal(true);
+          }}
+        >
+          + New Proposal
+        </button>
       </div>
 
       <div className="grid-stats" style={{ marginBottom: 24 }}>
@@ -1911,26 +1959,48 @@ function ProposalsPage() {
       <div style={S.card}>
         <div style={S.cardHeader}>Active Proposals</div>
         {loading ? <LoadingState message="Loading proposals..." /> : proposals.length === 0 ? (
-          <EmptyState icon="📝" title="No proposals yet" description="Create your first proposal to get started." action="+ New Proposal" onAction={() => { setNewProposalForm({ leadId: "", title: "", amount: "" }); setNewProposalError(null); setShowNewProposal(true); }} />
+          <EmptyState
+            icon="📝"
+            title="No proposals yet"
+            description="Create a proposal in a few fields — lead, package, and amount."
+            action="+ New Proposal"
+            onAction={() => {
+              setNewProposalForm({ leadId: "", title: "", amount: "", packageType: "standard" });
+              setNewProposalError(null);
+              setShowNewProposal(true);
+            }}
+          />
         ) : (
         <div className="table-responsive">
         <table style={S.table}>
-          <thead><tr><th style={S.th}>#</th><th style={S.th}>Customer</th><th style={S.th}>Title / System</th><th style={S.th}>Amount</th><th style={S.th} className="hide-mobile">Loan Est./mo</th><th style={S.th} className="hide-mobile">Lease Est./mo</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead>
+          <thead>
+            <tr>
+              <th style={S.th}>#</th>
+              <th style={S.th}>Customer</th>
+              <th style={S.th}>Title</th>
+              <th style={S.th}>Amount</th>
+              <th style={S.th}>Status</th>
+              <th style={S.th}>Actions</th>
+            </tr>
+          </thead>
           <tbody>
             {proposals.map((p) => {
               const cashPrice = p.amount || 0;
-              const loanPayment = cashPrice ? Math.round(cashPrice / 150) : "—";
-              const leasePayment = cashPrice ? Math.round(cashPrice / 220) : "—";
               const customer = `${p.leadFirstName || ""} ${p.leadLastName || ""}`.trim() || "—";
-              const viewableProposal = { id: `P${String(p.id).padStart(3, "0")}`, customer, system: p.title, cashPrice, loanPayment, leasePayment, status: statusLabel(p.status), created: new Date(p.createdAt).toISOString().split("T")[0] };
+              const viewableProposal = {
+                id: `P${String(p.id).padStart(3, "0")}`,
+                customer,
+                system: p.title,
+                cashPrice,
+                status: statusLabel(p.status),
+                created: new Date(p.createdAt).toISOString().split("T")[0],
+              };
               return (
                 <tr key={p.id}>
                   <td style={S.td}><span style={{ fontWeight: 600, color: COLORS.orange }}>P{String(p.id).padStart(3, "0")}</span></td>
                   <td style={S.td}><span style={{ fontWeight: 600 }}>{customer}</span></td>
                   <td style={S.td}>{p.title}</td>
                   <td style={S.td}>${cashPrice.toLocaleString()}</td>
-                  <td style={S.td} className="hide-mobile">{loanPayment !== "—" ? `$${loanPayment}/mo` : "—"}</td>
-                  <td style={S.td} className="hide-mobile">{leasePayment !== "—" ? `$${leasePayment}/mo` : "—"}</td>
                   <td style={S.td}><span style={S.badge(statusColor(p.status))}>{statusLabel(p.status)}</span></td>
                   <td style={S.td}><div style={{ display: "flex", gap: 6 }}>
                     <button style={{ ...S.btn("ghost"), padding: "5px 10px", fontSize: 11 }} onClick={() => setSelectedProposal(viewableProposal)}>View</button>
@@ -1946,75 +2016,12 @@ function ProposalsPage() {
         )}
       </div>
 
-      {/* FEATURE 4: White-Label Branding Config */}
-      <div style={S.card}>
-        <div style={S.cardHeader}>
-          <span>🏷️ White-Label Proposal Branding</span>
-          <span style={S.badge(COLORS.green)}>✓ Configured</span>
-        </div>
-        <p style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 16 }}>Proposals are fully branded with your company identity. Catalyst appears only as a subtle "Powered by" footer.</p>
-        <div className="grid-3col">
-          <div>
-            <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Company Name on Proposals</label>
-            <input style={S.input} value={whiteLabel.companyName} onChange={(e) => setWhiteLabel({ ...whiteLabel, companyName: e.target.value })} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Brand Color</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input type="color" value={whiteLabel.primaryColor} onChange={(e) => setWhiteLabel({ ...whiteLabel, primaryColor: e.target.value })} style={{ width: 40, height: 36, border: "none", borderRadius: 6, cursor: "pointer" }} />
-              <input style={S.input} value={whiteLabel.primaryColor} onChange={(e) => setWhiteLabel({ ...whiteLabel, primaryColor: e.target.value })} />
-            </div>
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 6 }}>Company Logo</label>
-            <div style={{ padding: 10, border: `1px solid ${COLORS.border}`, borderRadius: 8, textAlign: "center", fontSize: 12, color: COLORS.green }}>
-              {whiteLabel.logoUploaded ? "✓ Logo uploaded" : "Click to upload"}
-            </div>
-          </div>
-        </div>
-        <div style={{ marginTop: 12, padding: 12, background: COLORS.surfaceAlt, borderRadius: 8 }}>
-          <div style={{ fontSize: 12, color: COLORS.textMuted }}>Preview: Proposals show <strong style={{ color: COLORS.text }}>{whiteLabel.companyName}</strong> as primary brand, with a small <span style={{ color: COLORS.orangeLight }}>"Powered by Catalyst"</span> footer.</div>
-        </div>
-      </div>
-
-      <div className="grid-2col">
-        <div style={S.card}>
-          <div style={S.cardHeader}>Financing Options</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[
-              { icon: "💵", name: "Cash Purchase", enabled: true, key: "proposal.financing.cash" },
-              { icon: "🏦", name: "Loan Financing", enabled: true, key: "proposal.financing.loan" },
-              { icon: "📋", name: "Lease Agreement", enabled: true, key: "proposal.financing.lease" },
-              { icon: "⚡", name: "PPA", enabled: true, key: "proposal.financing.ppa" },
-            ].map((opt, i) => (
-              <div key={i} style={{ padding: 16, borderRadius: 10, border: `1px solid ${COLORS.border}`, background: COLORS.orangeGlow }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ fontSize: 20 }}>{opt.icon}</span><span style={{ fontSize: 13, fontWeight: 600 }}>{opt.name}</span></div>
-                <Toggle value={opt.enabled} label="Enabled" settingKey={opt.key} />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={S.card}>
-          <div style={S.cardHeader}>External Connections</div>
-          <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ padding: 16, borderRadius: 10, border: `2px dashed ${COLORS.border}`, textAlign: "center", cursor: "pointer" }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>🔗</div><div style={{ fontSize: 13, fontWeight: 600 }}>Link Proposal Tool</div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted }}>SolarEdge, Enphase, Aurora, etc.</div>
-            </div>
-            <div style={{ padding: 16, borderRadius: 10, border: `2px dashed ${COLORS.border}`, textAlign: "center", cursor: "pointer" }}>
-              <div style={{ fontSize: 20, marginBottom: 4 }}>📄</div><div style={{ fontSize: 13, fontWeight: 600 }}>Upload Price Sheet</div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted }}>PDF, CSV, or Excel pricing</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* New Proposal Modal */}
       {showNewProposal && (
         <div style={S.modal} onClick={() => setShowNewProposal(false)}>
           <div style={S.modalContent} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>New Proposal</h3>
-            <p style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 20 }}>Create a proposal for a lead.</p>
+            <p style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 20 }}>Lead, package, and amount — then send.</p>
             <div style={{ marginBottom: 14 }}>
               <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>Customer (Lead) *</label>
               <select style={{ ...S.select, width: "100%" }} value={newProposalForm.leadId} onChange={(e) => setNewProposalForm(f => ({ ...f, leadId: e.target.value }))}>
@@ -2023,25 +2030,53 @@ function ProposalsPage() {
               </select>
             </div>
             <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>System / Title *</label>
-              <input style={S.input} placeholder="e.g. 8.4kW Solar + Battery" value={newProposalForm.title} onChange={(e) => setNewProposalForm(f => ({ ...f, title: e.target.value }))} />
+              <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>Package *</label>
+              <select
+                style={{ ...S.select, width: "100%" }}
+                value={newProposalForm.packageType}
+                onChange={(e) => {
+                  const pkg = PACKAGE_OPTIONS.find((o) => o.id === e.target.value);
+                  setNewProposalForm((f) => ({
+                    ...f,
+                    packageType: e.target.value,
+                    title: f.title.trim() ? f.title : (pkg?.label || f.title),
+                  }));
+                }}
+              >
+                {PACKAGE_OPTIONS.map((o) => (
+                  <option key={o.id} value={o.id}>{o.label}</option>
+                ))}
+              </select>
             </div>
             <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>Cash Price ($)</label>
+              <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>Title *</label>
+              <input style={S.input} placeholder="e.g. Premium package — March quote" value={newProposalForm.title} onChange={(e) => setNewProposalForm(f => ({ ...f, title: e.target.value }))} />
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: COLORS.textMuted, display: "block", marginBottom: 4 }}>Amount ($)</label>
               <input style={S.input} type="number" placeholder="28500" value={newProposalForm.amount} onChange={(e) => setNewProposalForm(f => ({ ...f, amount: e.target.value }))} />
             </div>
             {newProposalError && <div style={{ padding: "10px 14px", borderRadius: 8, background: `${COLORS.red}15`, border: `1px solid ${COLORS.red}44`, color: COLORS.red, fontSize: 13, marginBottom: 14 }}>{newProposalError}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
               <button style={S.btn("ghost")} onClick={() => setShowNewProposal(false)}>Cancel</button>
               <button style={S.btn("primary")} disabled={newProposalSaving} onClick={async () => {
-                if (!newProposalForm.leadId || !newProposalForm.title.trim()) {
+                const title =
+                  newProposalForm.title.trim() ||
+                  PACKAGE_OPTIONS.find((o) => o.id === newProposalForm.packageType)?.label ||
+                  "";
+                if (!newProposalForm.leadId || !title) {
                   setNewProposalError("Customer and title are required.");
                   return;
                 }
                 setNewProposalSaving(true);
                 setNewProposalError(null);
                 try {
-                  await proposalsApi.create({ leadId: parseInt(newProposalForm.leadId), title: newProposalForm.title, amount: newProposalForm.amount ? parseInt(newProposalForm.amount) : null, status: "sent" });
+                  await proposalsApi.create({
+                    leadId: parseInt(newProposalForm.leadId),
+                    title,
+                    amount: newProposalForm.amount ? parseInt(newProposalForm.amount) : null,
+                    status: "sent",
+                  });
                   setShowNewProposal(false);
                   fetchProposals();
                 } catch (err) {
@@ -2049,71 +2084,24 @@ function ProposalsPage() {
                 } finally {
                   setNewProposalSaving(false);
                 }
-              }}>{newProposalSaving ? "Creating…" : "Create Proposal"}</button>
+              }}>{newProposalSaving ? "Creating…" : "Create & send"}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* FEATURE 4: White-Labeled Proposal Viewer */}
       {selectedProposal && (
         <div style={S.modal} onClick={() => setSelectedProposal(null)}>
-          <div style={{ ...S.modalContent, maxWidth: 700, background: "#fff", color: "#1a1a1a" }} onClick={(e) => e.stopPropagation()}>
-            {/* White-labeled header with client branding */}
-            <div style={{ textAlign: "center", marginBottom: 24, borderBottom: `3px solid ${whiteLabel.primaryColor}`, paddingBottom: 20 }}>
-              <div style={{ fontSize: 24, fontWeight: 800, color: whiteLabel.primaryColor }}>{whiteLabel.companyName}</div>
-              <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>Custom Solar Energy Proposal</div>
-              <div style={{ fontSize: 12, color: "#999", marginTop: 2 }}>Prepared for {selectedProposal.customer} · {selectedProposal.created}</div>
+          <div style={{ ...S.modalContent, maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 8px" }}>{selectedProposal.system}</h3>
+            <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 16px" }}>
+              {selectedProposal.customer} · {selectedProposal.created} · {selectedProposal.status}
+            </p>
+            <div style={{ fontSize: 28, fontWeight: 700, color: COLORS.orange, marginBottom: 20 }}>
+              ${Number(selectedProposal.cashPrice || 0).toLocaleString()}
             </div>
-
-            <div style={{ background: `linear-gradient(135deg, ${whiteLabel.primaryColor}15, transparent)`, borderRadius: 12, padding: 24, marginBottom: 20 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a1a", marginBottom: 12 }}>☀️ Recommended: {selectedProposal.system}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-                {[
-                  { label: "Annual Savings", value: "$2,840", icon: "💰" },
-                  { label: "25-Year Savings", value: "$71,000+", icon: "📈" },
-                  { label: "CO₂ Offset", value: "8.2 tons/yr", icon: "🌿" },
-                ].map((s, i) => (
-                  <div key={i} style={{ textAlign: "center", padding: 12, background: "#fff", borderRadius: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                    <div style={{ fontSize: 18 }}>{s.icon}</div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: whiteLabel.primaryColor }}>{s.value}</div>
-                    <div style={{ fontSize: 11, color: "#888" }}>{s.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
-              {[
-                { title: "Cash Purchase", price: `$${selectedProposal.cashPrice.toLocaleString()}`, sub: "Best value — full ownership", highlight: true },
-                { title: "Loan Financing", price: `$${selectedProposal.loanPayment}/mo`, sub: "25-year warranty included" },
-                { title: "Lease", price: `$${selectedProposal.leasePayment}/mo`, sub: "$0 down, maintenance included" },
-              ].map((opt, i) => (
-                <div key={i} style={{
-                  padding: 20, borderRadius: 10, textAlign: "center", cursor: "pointer",
-                  border: `2px solid ${opt.highlight ? whiteLabel.primaryColor : "#e0e0e0"}`,
-                  background: opt.highlight ? `${whiteLabel.primaryColor}10` : "#fafafa",
-                }}>
-                  {opt.highlight && <div style={{ fontSize: 10, fontWeight: 700, color: whiteLabel.primaryColor, marginBottom: 8, textTransform: "uppercase" }}>Most Popular</div>}
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{opt.title}</div>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: whiteLabel.primaryColor }}>{opt.price}</div>
-                  <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>{opt.sub}</div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 20 }}>
-              <button style={{ ...S.btn("success"), background: whiteLabel.primaryColor }}>✅ Accept & Pay Deposit</button>
-              <button style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${whiteLabel.primaryColor}`, background: "transparent", color: whiteLabel.primaryColor, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "inherit" }}>📧 Email to Customer</button>
-              <button style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd", background: "transparent", color: "#888", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }} onClick={() => setSelectedProposal(null)}>Close</button>
-            </div>
-
-            {/* Subtle Catalyst footer */}
-            <div style={{ textAlign: "center", paddingTop: 16, borderTop: "1px solid #eee" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: 0.4 }}>
-                <svg width={14} height={14} viewBox="0 0 100 100"><polygon points="50,5 61,35 95,35 68,55 78,88 50,68 22,88 32,55 5,35 39,35" fill="#d35400" /></svg>
-                <span style={{ fontSize: 10, color: "#999" }}>Powered by Catalyst · Leviosai, Inc.</span>
-              </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button style={S.btn("ghost")} onClick={() => setSelectedProposal(null)}>Close</button>
             </div>
           </div>
         </div>
@@ -2128,77 +2116,224 @@ function ProposalsPage() {
 // CONVERSATION REPLAY (Dedicated Page) — Feature 2
 // ============================================================
 function ConversationReplayPage() {
-  const allConvos = SAMPLE_LEADS.flatMap(l => l.conversations.map(c => ({ ...c, leadName: l.name, leadId: l.id })));
   const [filterType, setFilterType] = useState("All");
   const [selected, setSelected] = useState(null);
+  const [allConvos, setAllConvos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const filtered = filterType === "All" ? allConvos : allConvos.filter(c => c.type === filterType.toLowerCase());
-  const sentimentColors = { very_positive: COLORS.green, positive: COLORS.greenLight, neutral: COLORS.yellow, negative: COLORS.red };
-  const outcomeLabels = { appointment_set: "Appt Set", confirmed: "Confirmed", deferred: "Deferred", no_response: "No Response", declined: "Declined" };
-  const outcomeColors = { appointment_set: COLORS.green, confirmed: COLORS.green, deferred: COLORS.yellow, no_response: COLORS.textMuted, declined: COLORS.red };
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      callApi.getSessions({ limit: 50 }).catch(() => ({ data: [] })),
+      messagesApi.recent(50).catch(() => []),
+    ])
+      .then(([sessionsRes, messages]) => {
+        const sessions = Array.isArray(sessionsRes) ? sessionsRes : sessionsRes?.data || [];
+        const msgs = Array.isArray(messages) ? messages : messages?.data || [];
+        const merged = [
+          ...mapCallSessionsToReplay(sessions),
+          ...mapMessagesToReplay(msgs),
+        ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+        setAllConvos(merged);
+      })
+      .catch((err) => setError(err.message || "Failed to load conversations"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filtered =
+    filterType === "All"
+      ? allConvos
+      : allConvos.filter((c) => c.type === filterType.toLowerCase());
+  const outcomeLabels = {
+    appointment_set: "Appt Set",
+    confirmed: "Confirmed",
+    deferred: "Deferred",
+    no_response: "No Response",
+    declined: "Declined",
+    replied: "Replied",
+    sent: "Sent",
+    completed: "Completed",
+    booked: "Booked",
+  };
+  const outcomeColors = {
+    appointment_set: COLORS.green,
+    confirmed: COLORS.green,
+    booked: COLORS.green,
+    deferred: COLORS.yellow,
+    no_response: COLORS.textMuted,
+    declined: COLORS.red,
+    replied: COLORS.blue,
+    sent: COLORS.orange,
+    completed: COLORS.textMuted,
+  };
+
+  if (loading) return <LoadingState message="Loading conversations..." />;
+  if (error) return <ErrorState message={error} onRetry={load} />;
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}><h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Conversation Replay</h2><p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>Review all AI conversations — learn what works, refine what doesn't</p></div>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Conversation Replay</h2>
+        <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
+          Real calls and messages for this account only — no demo data.
+        </p>
+      </div>
 
       <div className="grid-stats" style={{ marginBottom: 24 }}>
         <StatCard label="Total Conversations" value={allConvos.length} color={COLORS.orange} icon="💬" />
-        <StatCard label="Appointments Set" value={allConvos.filter(c => c.outcome === "appointment_set").length} color={COLORS.green} icon="📅" />
-        <StatCard label="Avg Sentiment" value="Positive" color={COLORS.greenLight} icon="😊" />
-        <StatCard label="Success Rate" value="60" suffix="%" color={COLORS.blue} icon="🎯" />
+        <StatCard
+          label="Voice Calls"
+          value={allConvos.filter((c) => c.type === "voice").length}
+          color={COLORS.green}
+          icon="📞"
+        />
+        <StatCard
+          label="SMS"
+          value={allConvos.filter((c) => c.type === "sms").length}
+          color={COLORS.blue}
+          icon="💬"
+        />
+        <StatCard
+          label="Email"
+          value={allConvos.filter((c) => c.type === "email").length}
+          color={COLORS.purple}
+          icon="✉️"
+        />
       </div>
 
       <TabBar tabs={["All", "Voice", "SMS", "Email"]} active={filterType} onChange={setFilterType} />
 
       <div style={S.card}>
-        <div style={S.cardHeader}><span>All Conversations</span><span style={{ fontSize: 12, color: COLORS.textMuted }}>{filtered.length} conversations</span></div>
-        <div className="table-responsive">
-        <table style={S.table}>
-          <thead><tr><th style={S.th}>Lead</th><th style={S.th}>Type</th><th style={S.th}>Date</th><th style={S.th} className="hide-mobile">Agent</th><th style={S.th} className="hide-mobile">Duration</th><th style={S.th}>Outcome</th><th style={S.th} className="hide-mobile">Sentiment</th><th style={S.th}>Action</th></tr></thead>
-          <tbody>
-            {filtered.map((c) => (
-              <tr key={c.id}>
-                <td style={S.td}><span style={{ fontWeight: 600 }}>{c.leadName}</span></td>
-                <td style={S.td}>{c.type === "voice" ? "📞" : c.type === "sms" ? "💬" : "✉️"} {c.type}</td>
-                <td style={S.td}>{c.date}</td>
-                <td style={S.td} className="hide-mobile">{c.agent}</td>
-                <td style={S.td} className="hide-mobile">{c.duration || "—"}</td>
-                <td style={S.td}><span style={S.badge(outcomeColors[c.outcome])}>{outcomeLabels[c.outcome]}</span></td>
-                <td style={S.td} className="hide-mobile"><span style={{ fontSize: 12, color: sentimentColors[c.sentiment] }}>{c.sentiment}</span></td>
-                <td style={S.td}><button style={{ ...S.btn("ghost"), padding: "5px 12px", fontSize: 11 }} onClick={() => setSelected(c)}>▶ Replay</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={S.cardHeader}>
+          <span>All Conversations</span>
+          <span style={{ fontSize: 12, color: COLORS.textMuted }}>{filtered.length} conversations</span>
         </div>
+        {filtered.length === 0 ? (
+          <EmptyState
+            icon="💬"
+            title="No conversations yet"
+            description="When your AI calls or messages leads, they will appear here for this workspace."
+          />
+        ) : (
+          <div className="table-responsive">
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Lead</th>
+                  <th style={S.th}>Type</th>
+                  <th style={S.th}>Date</th>
+                  <th style={S.th} className="hide-mobile">Agent</th>
+                  <th style={S.th} className="hide-mobile">Duration</th>
+                  <th style={S.th}>Outcome</th>
+                  <th style={S.th}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c.id}>
+                    <td style={S.td}>
+                      <span style={{ fontWeight: 600 }}>{c.leadName}</span>
+                    </td>
+                    <td style={S.td}>
+                      {c.type === "voice" ? "📞" : c.type === "sms" ? "💬" : "✉️"} {c.type}
+                    </td>
+                    <td style={S.td}>{c.date}</td>
+                    <td style={S.td} className="hide-mobile">
+                      {c.agent}
+                    </td>
+                    <td style={S.td} className="hide-mobile">
+                      {c.duration || "—"}
+                    </td>
+                    <td style={S.td}>
+                      <span style={S.badge(outcomeColors[c.outcome] || COLORS.textMuted)}>
+                        {outcomeLabels[c.outcome] || c.outcome || "—"}
+                      </span>
+                    </td>
+                    <td style={S.td}>
+                      <button
+                        style={{ ...S.btn("ghost"), padding: "5px 12px", fontSize: 11 }}
+                        onClick={() => setSelected(c)}
+                      >
+                        ▶ Replay
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {selected && (
         <div style={S.modal} onClick={() => setSelected(null)}>
           <div style={{ ...S.modalContent, maxWidth: 660 }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
-              <div><h3 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Conversation with {selected.leadName}</h3><div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>{selected.date} · {selected.type} · Agent: {selected.agent}</div></div>
-              <button style={{ ...S.btn("ghost"), padding: "6px 10px" }} onClick={() => setSelected(null)}>✕</button>
-            </div>
-            <div style={{ background: COLORS.surfaceAlt, borderRadius: 10, padding: 16, maxHeight: 400, overflowY: "auto" }}>
-              {selected.transcript.map((msg, i) => (
-                <div key={i} style={{ display: "flex", flexDirection: msg.role === "agent" ? "row" : "row-reverse", marginBottom: 12 }}>
-                  <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: 12, fontSize: 13, lineHeight: 1.6, background: msg.role === "agent" ? `${COLORS.orange}20` : `${COLORS.blue}20` }}>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: msg.role === "agent" ? COLORS.orange : COLORS.blue, marginBottom: 4, textTransform: "uppercase" }}>
-                      {msg.role === "agent" ? `🤖 ${selected.agent} (AI)` : `👤 ${selected.leadName}`}
-                    </div>
-                    <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
-                  </div>
+              <div>
+                <h3 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
+                  Conversation with {selected.leadName}
+                </h3>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
+                  {selected.date} · {selected.type} · Agent: {selected.agent}
                 </div>
-              ))}
-            </div>
-            <div style={{ marginTop: 12, padding: 12, background: COLORS.orangeGlow, borderRadius: 8, border: `1px solid ${COLORS.orange}33` }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.orangeLight, marginBottom: 4 }}>🧠 AI Analysis</div>
-              <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                {selected.outcome === "appointment_set" ? "Successful conversion. Agent used value-first positioning and offered exactly 2 appointment options per protocol."
-                  : selected.outcome === "confirmed" ? "Confirmation handled cleanly. AI disclosed identity, confirmed details, captured prep notes."
-                  : "Recommend adjusting approach — try switching channel or timing for next attempt."}
               </div>
+              <button style={{ ...S.btn("ghost"), padding: "6px 10px" }} onClick={() => setSelected(null)}>
+                ✕
+              </button>
+            </div>
+            <div
+              style={{
+                background: COLORS.surfaceAlt,
+                borderRadius: 10,
+                padding: 16,
+                maxHeight: 400,
+                overflowY: "auto",
+              }}
+            >
+              {(selected.transcript || []).length === 0 ? (
+                <div style={{ fontSize: 13, color: COLORS.textMuted }}>No transcript available for this item.</div>
+              ) : (
+                selected.transcript.map((msg, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      flexDirection: msg.role === "agent" ? "row" : "row-reverse",
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div
+                      style={{
+                        maxWidth: "80%",
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        fontSize: 13,
+                        lineHeight: 1.6,
+                        background: msg.role === "agent" ? `${COLORS.orange}20` : `${COLORS.blue}20`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: msg.role === "agent" ? COLORS.orange : COLORS.blue,
+                          marginBottom: 4,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {msg.role === "agent" ? `🤖 ${selected.agent}` : `👤 ${selected.leadName}`}
+                      </div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -3572,6 +3707,7 @@ const PAGE_TO_PATH = {
   "SDR Agent": "/sdr",
   "AI Calling": "/calling",
   "Live Calls": "/live-calls",
+  "Inbox": "/inbox",
   "SMS Inbox": "/sdr-sms",
   "Email Inbox": "/sdr-email",
   "SDR Setup": "/sdr-setup",
@@ -3590,6 +3726,11 @@ export default function CatalystApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [testCallOpen, setTestCallOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifItems, setNotifItems] = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const notifRef = useRef(null);
+  const [servicePaused, setServicePaused] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => !!localStorage.getItem(ONBOARDING_FLAG_KEY)
   );
@@ -3604,11 +3745,49 @@ export default function CatalystApp() {
     } catch { /* ignore */ }
     return null;
   });
+  const [handoffBusy, setHandoffBusy] = useState(() => !!readHandoffCodeFromSearch(location.search));
+  const [handoffError, setHandoffError] = useState("");
+
+  // P5 — external onboarding app deep-link: /?handoff=<code>
+  useEffect(() => {
+    const code = readHandoffCodeFromSearch(location.search);
+    if (!code) {
+      setHandoffBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setHandoffBusy(true);
+    setHandoffError("");
+    (async () => {
+      try {
+        const res = await exchangeOnboardingHandoff(code);
+        if (cancelled) return;
+        setToken(res.token);
+        applyHandoffPrefill(res.prefill || {});
+        stripHandoffFromUrl();
+        setUser(res.user);
+        setUserRole(res.user?.role ?? null);
+        setLoggedIn(true);
+        if (shouldShowOnboarding(res.user)) setNeedsOnboarding(true);
+      } catch (e) {
+        if (!cancelled) {
+          setHandoffError(e.message || "Handoff failed");
+          stripHandoffFromUrl();
+        }
+      } finally {
+        if (!cancelled) setHandoffBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.search]);
 
   const leadDetailMatch = location.pathname.match(/^\/leads\/([^/]+)$/);
   const isLeadDetail = !!leadDetailMatch;
   const page = isLeadDetail ? "Leads" : (PATH_TO_PAGE[location.pathname] ?? "Dashboard");
-  const isMessageInbox = page === "SMS Inbox" || page === "Email Inbox";
+  const isMessageInbox =
+    page === "Inbox" || page === "SMS Inbox" || page === "Email Inbox";
 
   // Collapse main CRM rail when opening a lead; restore when leaving
   useEffect(() => {
@@ -3618,6 +3797,33 @@ export default function CatalystApp() {
     }
     setSidebarCollapsed(isLeadDetail);
   }, [isLeadDetail, testCallOpen]);
+
+  // Close notification panel on outside tap (fixes iPhone dead-tap when overlay steals events)
+  useEffect(() => {
+    if (!notifOpen) return;
+    const onPointerDown = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [notifOpen]);
+
+  const openNotifications = async () => {
+    const next = !notifOpen;
+    setNotifOpen(next);
+    if (!next) return;
+    setNotifLoading(true);
+    try {
+      const rows = await activityApi.list({ limit: 15 });
+      setNotifItems(Array.isArray(rows) ? rows : []);
+    } catch {
+      setNotifItems([]);
+    } finally {
+      setNotifLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (isAuthenticated() && !user) {
@@ -3634,6 +3840,17 @@ export default function CatalystApp() {
         .catch(() => { clearToken(); setLoggedIn(false); });
     }
   }, [loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn) {
+      setServicePaused(false);
+      return;
+    }
+    billingApi
+      .getStatus()
+      .then((b) => setServicePaused(!!b?.servicePause?.servicePaused))
+      .catch(() => setServicePaused(false));
+  }, [loggedIn, location.pathname]);
 
   // When user object arrives from login/register with onboardingComplete
   useEffect(() => {
@@ -3698,6 +3915,14 @@ export default function CatalystApp() {
     );
   }
 
+  if (handoffBusy) {
+    return (
+      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.bg }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 14 }}>Connecting from onboarding…</div>
+      </div>
+    );
+  }
+
   // ── Unauthenticated users ───────────────────────────────────────────────────
   if (!loggedIn) {
     // Trying to hit /admin or /admin/... without a session → operator login
@@ -3718,7 +3943,32 @@ export default function CatalystApp() {
         />
       );
     }
-    return <LoginPage onLogin={(u) => { setUser(u); setLoggedIn(true); setUserRole(u.role); }} />;
+    return (
+      <>
+        {handoffError ? (
+          <div
+            role="alert"
+            style={{
+              position: "fixed",
+              top: 12,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 50,
+              padding: "10px 14px",
+              borderRadius: 8,
+              background: `${COLORS.red}22`,
+              color: COLORS.red,
+              fontSize: 13,
+              maxWidth: 420,
+              textAlign: "center",
+            }}
+          >
+            {handoffError} — sign in normally or request a new handoff link.
+          </div>
+        ) : null}
+        <LoginPage onLogin={(u) => { setUser(u); setLoggedIn(true); setUserRole(u.role); }} />
+      </>
+    );
   }
 
   // ── Onboarding wizard — show until onboardingComplete is persisted ─────────
@@ -3762,24 +4012,23 @@ export default function CatalystApp() {
   // Authenticated app is wrapped below in <SettingsProvider> so every Toggle
   // with a recognized label/settingKey auto-persists to /api/settings.
 
+  const allowSandbox = canAccessSandbox(userRole);
   const navItems = [
     { section: "Overview" },
     { name: "Dashboard", icon: "📊" },
     { section: "CRM" },
     { name: "Leads", icon: "👥" },
     { name: "Campaigns", icon: "🚀", sub: "riivīv & alīv" },
-    { name: "Bookings", icon: "📅", sub: "Cancel · Reschedule" },
-    { name: "Conversation Replay", icon: "💬" },
-    { name: "Proposals & Sales", icon: "📝", badge: "PRO" },
-    { name: "Sandbox", icon: "⚡", badge: "DEMO" },
+    { name: "Bookings", icon: "📅", sub: "Day · Week · Month" },
+    { name: "Proposals & Sales", icon: "📝" },
+    ...(allowSandbox ? [{ name: "Sandbox", icon: "⚡", badge: "DEMO" }] : []),
     // All AI SDR product surfaces in one section (setup → config → voice → calls)
     { section: "AI SDR" },
     { name: "SDR Setup", icon: "🛠️", sub: "Twilio · Gmail" },
-    { name: "SDR Agent", icon: "🤖", sub: "Prompt · Realtime voice" },
+    { name: "SDR Agent", icon: "🤖", sub: "Console · Configure" },
     { name: "AI Calling", icon: "📞", sub: "Bookings · Outcomes" },
     { name: "Live Calls", icon: "🔴", sub: "Live transcript" },
-    { name: "SMS Inbox", icon: "💬", sub: "Text threads" },
-    { name: "Email Inbox", icon: "✉️", sub: "Email threads" },
+    { name: "Inbox", icon: "💬", sub: "SMS · Email" },
     { section: "Integrations" },
     { name: "Connect Your Tech", icon: "🔌" },
     { section: "Account" },
@@ -3791,14 +4040,23 @@ export default function CatalystApp() {
     if (isLeadDetail) {
       return <LeadDetailPage onNavigate={navigateTo} />;
     }
+    // P2.3 — Conversation Replay folded into lead timeline
+    if (page === "Conversation Replay" || location.pathname === "/replay") {
+      navigate("/leads", { replace: true });
+      return null;
+    }
+    // P2.5 — sandbox gated
+    if (page === "Sandbox" && !allowSandbox) {
+      navigate("/", { replace: true });
+      return null;
+    }
     switch (page) {
       case "Dashboard": return <DashboardPage setPage={navigateTo} />;
       case "Leads": return <LeadsPage onNavigate={navigateTo} />;
       case "Campaigns": return <CampaignsPage />;
       case "Bookings":
       case "Appointments": return <AppointmentsPage />;
-      case "Conversation Replay": return <ConversationReplayPage />;
-      case "Sandbox": return <SandboxPage setPage={navigateTo} />;
+      case "Sandbox": return allowSandbox ? <SandboxPage setPage={navigateTo} /> : null;
       case "Proposals & Sales": return <ProposalsPage />;
       case "Connect Your Tech": return <ConnectTechPage />;
       case "Billing": return <BillingPageLive />;
@@ -3807,8 +4065,13 @@ export default function CatalystApp() {
       case "AI Calling": return <CallingPanelPage />;
       case "Live Calls": return <LiveCallsPage />;
       case "SDR Setup": return <SDRSetupPage />;
-      case "SMS Inbox": return <MessageInboxPage channel="sms" />;
-      case "Email Inbox": return <MessageInboxPage channel="email" />;
+      case "Inbox": return <MessageInboxPage channel="all" />;
+      case "SMS Inbox":
+        navigate("/inbox?channel=sms", { replace: true });
+        return null;
+      case "Email Inbox":
+        navigate("/inbox?channel=email", { replace: true });
+        return null;
       default: return <DashboardPage setPage={navigateTo} />;
     }
   };
@@ -3878,8 +4141,51 @@ export default function CatalystApp() {
               <span style={{ fontSize: 17, fontWeight: 700 }}>{page}</span>
             </div>
             <div className="topbar-right">
-              <span className="compliance-badge-topbar"><ComplianceBadge /></span>
-              <div style={{ position: "relative" }}><span style={{ cursor: "pointer", fontSize: 18 }}>🔔</span><span style={{ position: "absolute", top: -4, right: -4, width: 14, height: 14, borderRadius: 7, background: COLORS.red, fontSize: 9, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>5</span></div>
+              <div ref={notifRef} style={{ position: "relative", zIndex: 5 }}>
+                <button
+                  type="button"
+                  className="notif-bell-btn"
+                  aria-label="Notifications"
+                  aria-expanded={notifOpen}
+                  onClick={openNotifications}
+                >
+                  🔔
+                  {notifItems.length > 0 && (
+                    <span className="notif-bell-badge">{Math.min(notifItems.length, 9)}</span>
+                  )}
+                </button>
+                {notifOpen && (
+                  <div className="notif-panel" role="dialog" aria-label="Notifications">
+                    <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, fontSize: 13, fontWeight: 600 }}>
+                      Notifications
+                    </div>
+                    {notifLoading ? (
+                      <div style={{ padding: 16, fontSize: 12, color: COLORS.textMuted }}>Loading…</div>
+                    ) : notifItems.length === 0 ? (
+                      <div style={{ padding: 16, fontSize: 12, color: COLORS.textMuted }}>
+                        No notifications yet for this account.
+                      </div>
+                    ) : (
+                      notifItems.map((n) => (
+                        <div
+                          key={n.id || `${n.action}-${n.createdAt}`}
+                          style={{
+                            padding: "10px 14px",
+                            borderBottom: `1px solid ${COLORS.border}44`,
+                            fontSize: 12,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          <div style={{ color: COLORS.text }}>{n.details || n.action || "Update"}</div>
+                          <div style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 2 }}>
+                            {n.createdAt ? new Date(n.createdAt).toLocaleString() : ""}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
               <input className="topbar-search" style={{ ...S.input, maxWidth: 200, padding: "8px 14px" }} placeholder="Search..." />
             </div>
           </div>
@@ -3894,6 +4200,40 @@ export default function CatalystApp() {
                 : S.content
           }
         >
+          {servicePaused && (
+            <div
+              role="alert"
+              style={{
+                marginBottom: isLeadDetail || isMessageInbox ? 0 : 16,
+                padding: "12px 16px",
+                borderRadius: 10,
+                background: "rgba(231,76,60,0.12)",
+                border: "1px solid rgba(231,76,60,0.45)",
+                color: "#f5b7b1",
+                fontSize: 13,
+                lineHeight: 1.45,
+              }}
+            >
+              Service paused — update payment to resume outbound AI calling, SMS, and email.{" "}
+              <button
+                type="button"
+                onClick={() => navigateTo("Billing")}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: COLORS.orange,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  fontSize: 13,
+                  textDecoration: "underline",
+                  padding: 0,
+                }}
+              >
+                Open Billing
+              </button>
+            </div>
+          )}
           {renderPage()}
         </div>
       </div>

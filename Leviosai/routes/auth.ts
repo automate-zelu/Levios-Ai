@@ -198,6 +198,20 @@ router.post("/api/auth/onboarding/complete", requireAuth, async (req: Request, r
       .where(eq(users.id, userId))
       .returning();
     if (!user) return res.status(404).json({ error: "User not found" });
+
+    // P5 — notify external onboarding app
+    if (user.organizationId) {
+      void import("../lib/onboarding-webhooks.js").then(({ emitOnboardingAppWebhook }) =>
+        emitOnboardingAppWebhook({
+          type: "onboarding.completed",
+          organizationId: user.organizationId!,
+          workspaceId: req.workspaceId ?? null,
+          userId: user.id,
+          email: user.email,
+        })
+      );
+    }
+
     res.json({ id: user.id, onboardingComplete: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

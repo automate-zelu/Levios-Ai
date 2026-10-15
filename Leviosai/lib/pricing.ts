@@ -1,9 +1,15 @@
 // ─── Client-facing SaaS pricing (IMPLEMENTATION_PLAN §15.1 / §21.3) ───────────
 // Flat monthly subscriptions. Dollar amounts are the default Stripe list prices
 // (low end of each suggested band). Ranges are shown in UI as guidance.
+// Starter / Ignite monthly list price MUST come from DEFAULT_GLOBAL_MONTHLY_FEE_CENTS
+// (see lib/commercial-pricing.ts — do not hardcode 29700 here).
 
 import type { SdrTier } from "./tiers.js";
 import { TIER_LIMITS, UNLIMITED } from "./tiers.js";
+import {
+  DEFAULT_GLOBAL_MONTHLY_FEE_CENTS,
+  MARKETING_PLAN_BY_KEY,
+} from "./commercial-pricing.js";
 
 export type PaidPlanKey = "starter" | "growth" | "scale" | "enterprise";
 
@@ -34,8 +40,9 @@ export const PLAN_PRICING: Record<PaidPlanKey, PlanPricing> = {
   starter: {
     key: "starter",
     name: "Starter",
-    monthlyPriceCents: 29_700, // $297
-    suggestedMinUsd: 297,
+    /** Marketing: Ignite — SoT is DEFAULT_GLOBAL_MONTHLY_FEE_CENTS */
+    monthlyPriceCents: DEFAULT_GLOBAL_MONTHLY_FEE_CENTS,
+    suggestedMinUsd: Math.round(DEFAULT_GLOBAL_MONTHLY_FEE_CENTS / 100),
     suggestedMaxUsd: 497,
     priceHint: TIER_LIMITS.starter.priceHint,
     leadsPerMonth: TIER_LIMITS.starter.monthlyLeadLimit,
@@ -46,6 +53,7 @@ export const PLAN_PRICING: Record<PaidPlanKey, PlanPricing> = {
   growth: {
     key: "growth",
     name: "Growth",
+    /** Marketing: Catalyze */
     monthlyPriceCents: 79_700, // $797
     suggestedMinUsd: 797,
     suggestedMaxUsd: 997,
@@ -58,6 +66,7 @@ export const PLAN_PRICING: Record<PaidPlanKey, PlanPricing> = {
   scale: {
     key: "scale",
     name: "Scale",
+    /** Marketing: Chain Reaction */
     monthlyPriceCents: 149_700, // $1,497
     suggestedMinUsd: 1_497,
     suggestedMaxUsd: 1_997,
@@ -70,6 +79,7 @@ export const PLAN_PRICING: Record<PaidPlanKey, PlanPricing> = {
   enterprise: {
     key: "enterprise",
     name: "Enterprise",
+    /** Marketing: Chain Reaction (enterprise band) */
     monthlyPriceCents: 249_700, // $2,497
     suggestedMinUsd: 2_497,
     suggestedMaxUsd: 3_497,
@@ -80,6 +90,8 @@ export const PLAN_PRICING: Record<PaidPlanKey, PlanPricing> = {
     features: ["10,000+ leads / mo", "Unlimited minutes", "Unlimited seats", "Dedicated support"],
   },
 };
+
+export { MARKETING_PLAN_BY_KEY };
 
 export function formatUsdFromCents(cents: number): string {
   const dollars = cents / 100;
@@ -161,6 +173,7 @@ export function listPublicPlans(): Array<{
     return {
       key,
       name: p.name,
+      marketingName: MARKETING_PLAN_BY_KEY[key],
       sdrTier: key as SdrTier,
       monthlyPriceCents: p.monthlyPriceCents,
       monthlyPriceLabel: formatMonthlyPriceLabel(p.monthlyPriceCents),

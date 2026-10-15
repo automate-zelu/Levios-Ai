@@ -215,7 +215,13 @@ export async function collectChargeFromCard(
       .set({ lastBillingError: message })
       .where(eq(organizations.id, org.id));
     if (charge.feeKind === "monthly") {
-      await deactivateWorkspaceForFailedCharge(org.stripeCustomerId);
+      const { pauseOrgForNonPayment } = await import("./commercial-pricing-service.js");
+      const result = await pauseOrgForNonPayment(org.id, "monthly_charge_failed");
+      if (result.skipped) {
+        // Approved weekly/monthly plan — keep workspace active
+      } else if (org.stripeCustomerId) {
+        await deactivateWorkspaceForFailedCharge(org.stripeCustomerId);
+      }
     }
     void import("./product-email.js")
       .then(({ notifyOrgPaymentFailed }) =>

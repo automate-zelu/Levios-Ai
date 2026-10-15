@@ -48,6 +48,20 @@ export const auth = {
   completeOnboarding: () => request("/api/auth/onboarding/complete", { method: "POST", body: "{}" }),
 };
 
+/** P5 — exchange one-time handoff code from external onboarding app (no session yet). */
+export async function exchangeOnboardingHandoff(code) {
+  const res = await fetch(`${API_BASE}/api/integrations/onboarding/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || "Handoff failed");
+  }
+  return res.json();
+}
+
 // Dashboard
 export const dashboard = {
   getStats: () => request("/api/dashboard"),

@@ -356,3 +356,224 @@
     width: 100%;
   }
 }
+
+/* Console / Configure tabs */
+.sdr-agent-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sdr-agent-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--setup-muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sdr-agent-tabs button.is-on {
+  color: var(--setup-ink);
+  border-color: var(--setup-line);
+  background: rgba(224, 138, 58, 0.12);
+}
+
+/* P3.1 Ops console */
+.sdr-ops-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+  padding: 22px 24px;
+  border-radius: 16px;
+  border: 1px solid var(--setup-line);
+  background: linear-gradient(165deg, #241e16 0%, #14110e 100%);
+}
+
+.sdr-ops-kicker {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--setup-copper);
+  margin-bottom: 6px;
+}
+
+.sdr-ops-hero h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 750;
+}
+
+.sdr-ops-hero p {
+  margin: 8px 0 0;
+  max-width: 52ch;
+  color: var(--setup-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sdr-ops-hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.sdr-ops-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.sdr-ops-metric {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--setup-line);
+  background: var(--setup-panel);
+  display: grid;
+  gap: 6px;
+}
+
+.sdr-ops-metric span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--setup-muted);
+}
+
+.sdr-ops-metric strong {
+  font-size: 20px;
+  font-weight: 750;
+}
+
+.sdr-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.sdr-ops-card {
+  border: 1px solid var(--setup-line);
+  border-radius: 14px;
+  background: var(--setup-panel);
+  padding: 14px 16px;
+  min-height: 160px;
+}
+
+.sdr-ops-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sdr-ops-card-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sdr-ops-card-head span {
+  font-size: 12px;
+  color: var(--setup-muted);
+}
+
+.sdr-ops-link {
+  background: none;
+  border: none;
+  color: var(--setup-copper);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sdr-ops-list,
+.sdr-ops-actions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.sdr-ops-list button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 2px;
+  padding: 10px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sdr-ops-list button:hover {
+  border-color: var(--setup-line);
+}
+
+.sdr-ops-list strong {
+  font-size: 13px;
+}
+
+.sdr-ops-list span {
+  font-size: 11px;
+  color: var(--setup-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sdr-ops-actions li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--setup-line);
+}
+
+.sdr-ops-actions li:last-child {
+  border-bottom: none;
+}
+
+.sdr-ops-actions p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--setup-muted);
+  line-height: 1.4;
+}
+
+.sdr-ops-actions button {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--setup-line);
+  color: var(--setup-ink);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sdr-ops-sequences {
+  margin-top: 8px;
+}
+
+@media (max-width: 860px) {
+  .sdr-ops-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -73,6 +73,16 @@ export async function initiateCall(enrollmentId: string): Promise<void> {
 
   if (!workspace) throw new Error(`Workspace ${enrollment.workspaceId} not found`);
 
+  try {
+    const { isOrgServicePaused } = await import("../commercial-pricing-service.js");
+    if (await isOrgServicePaused(workspace.organizationId)) {
+      console.log(`SDR Call: org ${workspace.organizationId} service paused — skipping outbound`);
+      return;
+    }
+  } catch {
+    /* schema may lag */
+  }
+
   // Phone provider (Twilio or Telnyx) must be ready before dialling (skipped in SDR_DRY_RUN)
   if (!workspacePhoneConnected(workspace) && !isSdrDryRun()) {
     console.log(`SDR Call: workspace ${workspace.id} has no phone number — deferring`);

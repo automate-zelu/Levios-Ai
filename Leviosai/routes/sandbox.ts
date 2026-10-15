@@ -14,8 +14,12 @@ import {
   DEMO_SCENARIOS,
 } from "../reactor/sandbox.js";
 import { storage } from "../lib/storage.js";
+import { requireSandboxAccess } from "../lib/sandbox-gate.js";
 
 const router = Router();
+
+// P2.5 — sandbox is admin / ENABLE_SANDBOX only (not live customers)
+router.use("/api/sandbox", requireSandboxAccess);
 
 // ─── List available demo scenarios ──────────────────────────────────────────
 router.get("/api/sandbox/scenarios", (_req: Request, res: Response) => {

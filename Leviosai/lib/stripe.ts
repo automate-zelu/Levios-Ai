@@ -382,6 +382,15 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
         if (subId && (invoice.amount_paid || 0) > 0) {
           await pauseSubscriptionCollection(subId);
         }
+        const [paidOrg] = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.stripeCustomerId, customerId))
+          .limit(1);
+        if (paidOrg) {
+          const { resumeOrgAfterPayment } = await import("./commercial-pricing-service.js");
+          await resumeOrgAfterPayment(paidOrg.id);
+        }
       }
       break;
     }
@@ -390,13 +399,21 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
       const invoice = event.data.object as Stripe.Invoice;
       const customerId = invoice.customer as string;
       console.warn(`⚠️  Payment failed for customer ${customerId}`);
-      await deactivateWorkspaceForCustomer(customerId);
       const [failedOrg] = await db
         .select({ id: organizations.id })
         .from(organizations)
         .where(eq(organizations.stripeCustomerId, customerId))
         .limit(1);
       if (failedOrg) {
+        const { pauseOrgForNonPayment } = await import("./commercial-pricing-service.js");
+        const result = await pauseOrgForNonPayment(failedOrg.id, "stripe_invoice_payment_failed");
+        if (result.skipped) {
+          console.warn(
+            `⚠️  Payment failed for org ${failedOrg.id} but pause skipped (approved plan / exempt)`
+          );
+        } else {
+          await deactivateWorkspaceForCustomer(customerId);
+        }
         void import("./product-email.js")
           .then(({ notifyOrgPaymentFailed }) =>
             notifyOrgPaymentFailed({
@@ -406,6 +423,8 @@ export async function handleWebhookEvent(payload: Buffer, signature: string) {
             })
           )
           .catch((err: Error) => console.error("Payment failed email:", err.message));
+      } else {
+        await deactivateWorkspaceForCustomer(customerId);
       }
       break;
     }

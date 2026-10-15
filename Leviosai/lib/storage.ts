@@ -245,9 +245,13 @@ export const storage = {
    */
   async getMessageThreads(
     organizationId: number,
-    channel: "sms" | "email",
+    channel: "sms" | "email" | "all",
     limit = 50
   ) {
+    const channelFilter =
+      channel === "all"
+        ? undefined
+        : eq(leadMessages.channel, channel);
     const rows = await db
       .select({
         id: leadMessages.id,
@@ -268,7 +272,7 @@ export const storage = {
       .where(
         and(
           eq(leads.organizationId, organizationId),
-          eq(leadMessages.channel, channel)
+          ...(channelFilter ? [channelFilter] : [])
         )
       )
       .orderBy(desc(leadMessages.createdAt))

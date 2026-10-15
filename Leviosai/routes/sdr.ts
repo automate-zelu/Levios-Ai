@@ -262,6 +262,19 @@ router.patch("/api/sdr/config/status", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "SDR config not found — create it first" });
     }
 
+    // P5 — notify external onboarding app of activation changes
+    if (req.organizationId) {
+      void import("../lib/onboarding-webhooks.js").then(({ emitOnboardingAppWebhook }) =>
+        emitOnboardingAppWebhook({
+          type: isActive ? "sdr.activated" : "sdr.deactivated",
+          organizationId: req.organizationId!,
+          workspaceId,
+          userId: req.userId ?? null,
+          email: req.userEmail ?? null,
+        })
+      );
+    }
+
     res.json(config);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -564,6 +577,14 @@ router.post(
         .orderBy(desc(sdrEnrollments.enrolledAt))
         .limit(1);
 
+      let servicePaused = false;
+      try {
+        const { isOrgServicePaused } = await import("../lib/commercial-pricing-service.js");
+        servicePaused = await isOrgServicePaused(workspace.organizationId);
+      } catch {
+        /* schema may lag */
+      }
+
       const decision = evaluateEnrollmentEligibility({
         lead: {
           status: lead.status,
@@ -576,6 +597,7 @@ router.post(
           isActive: workspace.isActive,
           monthlyLeadsUsed: workspace.monthlyLeadsUsed,
           monthlyLeadLimit: workspace.monthlyLeadLimit,
+          servicePaused,
         },
         requireDormant: false, // manual enroll may override dormancy
       });
@@ -590,6 +612,7 @@ router.post(
           dnc: 403,
           lead_limit: 429,
           workspace_inactive: 403,
+          service_paused: 403,
         };
         return res.status(statusByReason[decision.reason] ?? 400).json({
           error: `Enrollment not allowed: ${decision.reason}`,

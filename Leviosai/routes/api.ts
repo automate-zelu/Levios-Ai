@@ -203,15 +203,19 @@ router.get("/api/messages/recent", requireAuth, async (req, res) => {
 // Inbox threads for SDR SMS / Email pages
 router.get("/api/messages/threads", requireAuth, async (req, res) => {
   try {
-    const channel = String(req.query.channel || "").toLowerCase();
-    if (channel !== "sms" && channel !== "email") {
-      return res.status(400).json({ error: "channel must be sms or email" });
+    const channel = String(req.query.channel || "all").toLowerCase();
+    if (channel !== "sms" && channel !== "email" && channel !== "all") {
+      return res.status(400).json({ error: "channel must be sms, email, or all" });
     }
     if (!req.organizationId) {
       return res.status(400).json({ error: "No organization" });
     }
     const limit = Math.min(100, parseInt(req.query.limit as string) || 50);
-    const threads = await storage.getMessageThreads(req.organizationId, channel, limit);
+    const threads = await storage.getMessageThreads(
+      req.organizationId,
+      channel as "sms" | "email" | "all",
+      limit
+    );
     res.json({ channel, threads });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
