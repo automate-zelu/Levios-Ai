@@ -26,7 +26,7 @@
     "test:m10": "tsx --test tests/m10-calendar.test.ts",
     "test:week5": "SDR_DRY_RUN=1 tsx --test tests/week5-integration.test.ts",
     "test:ci": "tsx --test tests/m*.test.ts tests/pricing.test.ts tests/ops-alerts.test.ts tests/telephony-byot.test.ts tests/telnyx-media-flow.test.ts",
-    "test:catalyst": "tsx --test tests/p0-client-bugs.test.ts tests/p1-billing.test.ts tests/p2-core-ux.test.ts tests/p3-agents-comms.test.ts tests/p4-levvi-onboarding.test.ts tests/p5-onboarding-integration.test.ts tests/m5-onboarding.test.ts tests/catalyst-plan-coverage.test.ts tests/commercial-pricing.test.ts tests/subscription-billing.test.ts tests/pricing.test.ts",
+    "test:catalyst": "tsx --test tests/p0-client-bugs.test.ts tests/p1-billing.test.ts tests/p2-core-ux.test.ts tests/p3-agents-comms.test.ts tests/p4-levvi-onboarding.test.ts tests/p5-onboarding-integration.test.ts tests/m5-onboarding.test.ts tests/catalyst-plan-coverage.test.ts tests/commercial-pricing.test.ts tests/subscription-billing.test.ts tests/pricing.test.ts tests/levvi-lead-import.test.ts",
     "stripe:sync-prices": "tsx scripts/create-stripe-prices.ts",
     "client:dev": "cd client && npm run dev",
     "client:build": "cd client && npm run build",

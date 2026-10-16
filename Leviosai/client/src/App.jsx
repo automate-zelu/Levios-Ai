@@ -768,6 +768,9 @@ function LoginPage({ onLogin }) {
     try {
       const res = await auth.login(email, pass);
       setToken(res.token);
+      if (res.user?.onboardingComplete === false || res.resumeOnboarding) {
+        localStorage.setItem(ONBOARDING_FLAG_KEY, "1");
+      }
       onLogin(res.user);
     } catch (err) {
       setError(err.message || "Invalid credentials");
@@ -858,7 +861,15 @@ function RegisterPage({ onRegister }) {
       onRegister(res.user);
       navigate("/");
     } catch (err) {
-      setError(err.message || "Registration failed");
+      const msg = err.message || "Registration failed";
+      // Incomplete Levvi setup — steer to login to resume wizard
+      if (/incomplete setup|resumeViaLogin|ONBOARDING_INCOMPLETE/i.test(msg)) {
+        setError(`${msg} Use Sign In below to continue where you left off.`);
+      } else if (/already registered/i.test(msg)) {
+        setError(`${msg} Go to Sign In instead.`);
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }

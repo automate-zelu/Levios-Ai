@@ -11,7 +11,10 @@ import {
   writeOnboardingDraft,
   firstIncompleteLevviStep,
 } from "../lib/onboarding.js";
-import { leadsApi, sdrApi, billingApi } from "../api.js";
+import { leadsApi, sdrApi, billingApi, settingsApi } from "../api.js";
+
+const LEVVI_DRAFT_SETTING = "levvi.onboardingDraft";
+const LEVVI_STEP_SETTING = "levvi.onboardingStep";
 import { OnboardingStep2 } from "../components/onboarding/OnboardingStep2.jsx";
 import {
   LevviWelcome,
@@ -129,35 +132,58 @@ export default function SDROnboarding({ user, onComplete }) {
   const [readyToLeave, setReadyToLeave] = useState(false);
   const [resumed, setResumed] = useState(false);
 
+  // Persist locally + to org settings so login on another device resumes Levvi
   useEffect(() => {
-    writeStoredOnboardingStep(clampOnboardingStep(step));
-  }, [step]);
-
-  useEffect(() => {
+    if (!resumed) return;
+    const clamped = clampOnboardingStep(step);
+    writeStoredOnboardingStep(clamped);
     writeOnboardingDraft(draft);
-  }, [draft]);
+    const t = setTimeout(() => {
+      settingsApi
+        .patch({
+          [LEVVI_DRAFT_SETTING]: draft,
+          [LEVVI_STEP_SETTING]: clamped,
+        })
+        .catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [step, draft, resumed]);
 
-  // Resume / skip completed steps on return
+  // Resume / skip completed steps on return (localStorage + server settings)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [leads, config, billing] = await Promise.all([
+        const [leads, config, billing, settingsRes] = await Promise.all([
           leadsApi.list().catch(() => []),
           sdrApi.getConfig().catch(() => null),
           billingApi.getStatus().catch(() => null),
+          settingsApi.get().catch(() => null),
         ]);
         if (cancelled) return;
+
+        const remote = settingsRes?.settings || {};
+        const remoteDraft =
+          remote[LEVVI_DRAFT_SETTING] && typeof remote[LEVVI_DRAFT_SETTING] === "object"
+            ? remote[LEVVI_DRAFT_SETTING]
+            : {};
+        const localDraft = readOnboardingDraft();
+        const mergedDraft = { ...remoteDraft, ...localDraft };
+        setDraft(mergedDraft);
+        writeOnboardingDraft(mergedDraft);
+
         const leadCount = Array.isArray(leads) ? leads.length : leads?.leads?.length || 0;
-        const stored = readStoredOnboardingStep();
+        const storedLocal = readStoredOnboardingStep();
+        const storedRemote = clampOnboardingStep(remote[LEVVI_STEP_SETTING] ?? 0);
+        const stored = Math.max(storedLocal, storedRemote);
         const incomplete = firstIncompleteLevviStep({
-          draft: readOnboardingDraft(),
+          draft: mergedDraft,
           billing,
           config,
           leadCount,
         });
-        // Skip ahead to first incomplete if user already progressed past intro
-        if (stored > 1 && incomplete > stored) {
+        // Prefer first incomplete when progress is ahead of draft; else resume stored step
+        if (incomplete > stored) {
           setStep(incomplete);
         } else if (stored <= 1 && incomplete > 2) {
           setStep(incomplete);
@@ -180,6 +206,12 @@ export default function SDROnboarding({ user, onComplete }) {
 
   const handleFinished = () => {
     clearOnboardingStorage();
+    settingsApi
+      .patch({
+        [LEVVI_DRAFT_SETTING]: {},
+        [LEVVI_STEP_SETTING]: null,
+      })
+      .catch(() => {});
     setReadyToLeave(true);
     onComplete?.();
   };

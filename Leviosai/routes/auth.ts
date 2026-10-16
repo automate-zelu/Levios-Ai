@@ -3,11 +3,50 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { db } from "../lib/db.js";
 import { users, organizations } from "../lib/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { ensureOrgSdr } from "../lib/org-tenant.js";
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || "catalyst-dev-secret-change-in-production";
+
+function normalizeEmail(email: unknown): string {
+  return typeof email === "string" ? email.trim().toLowerCase() : "";
+}
+
+async function findUserByEmail(email: string) {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${email}`)
+    .limit(1);
+  return user ?? null;
+}
+
+async function issueSession(user: typeof users.$inferSelect) {
+  let workspaceId: string | null = null;
+  let workspaceTier = "starter";
+  if (user.organizationId) {
+    const sdr = await ensureOrgSdr(user.organizationId);
+    workspaceId = sdr.workspaceId;
+    workspaceTier = sdr.tier;
+  }
+  const token = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      organizationId: user.organizationId,
+      workspaceId,
+      tier: workspaceTier,
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+  return {
+    token,
+    user: publicUser(user, { workspaceId, tier: workspaceTier }),
+  };
+}
 
 // Extend Express Request with auth fields
 declare global {
@@ -55,15 +94,42 @@ function publicUser(user: typeof users.$inferSelect, extras: Record<string, unkn
   };
 }
 
-// Register — auto-creates an organization for the user
+// Register — auto-creates an organization for the user.
+// If the email already exists with incomplete Levvi setup and the password matches,
+// resume the session instead of returning "already registered".
 router.post("/api/auth/register", async (req: Request, res: Response) => {
   try {
-    const { email, password, firstName, lastName, organizationName } = req.body;
+    const { password, firstName, lastName, organizationName } = req.body;
+    const email = normalizeEmail(req.body?.email);
     if (!email || !password || !firstName || !lastName) {
       return res.status(400).json({ error: "All fields required" });
     }
-    const [existing] = await db.select().from(users).where(eq(users.email, email));
-    if (existing) return res.status(409).json({ error: "Email already registered" });
+
+    const existing = await findUserByEmail(email);
+    if (existing) {
+      const incomplete = existing.onboardingComplete === false;
+      if (incomplete) {
+        const valid = await bcrypt.compare(password, existing.passwordHash);
+        if (valid) {
+          const session = await issueSession(existing);
+          return res.status(200).json({
+            ...session,
+            resumed: true,
+            message: "Welcome back — continue Levvi setup where you left off.",
+          });
+        }
+        return res.status(409).json({
+          error:
+            "Account exists with incomplete setup. Please log in with your password to continue Levvi setup.",
+          code: "ONBOARDING_INCOMPLETE",
+          resumeViaLogin: true,
+        });
+      }
+      return res.status(409).json({
+        error: "Email already registered. Please log in.",
+        code: "EMAIL_TAKEN",
+      });
+    }
 
     // Create organization for this user
     const orgName = organizationName || `${firstName}'s Organization`;
@@ -95,74 +161,34 @@ router.post("/api/auth/register", async (req: Request, res: Response) => {
       )
       .catch((err: Error) => console.error("Welcome email failed:", err.message));
 
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-        organizationId: org.id,
-        workspaceId: sdr.workspaceId,
-        tier: sdr.tier,
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
+    const session = await issueSession(user);
     res.status(201).json({
-      token,
-      user: publicUser(user, {
-        organizationId: org.id,
-        workspaceId: sdr.workspaceId,
-        tier: sdr.tier,
-        onboardingComplete: false,
-      }),
+      ...session,
+      resumed: false,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Login
+// Login — incomplete onboarding users land back in Levvi via onboardingComplete: false
 router.post("/api/auth/login", async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const password = req.body?.password;
+    const email = normalizeEmail(req.body?.email);
     if (!email || !password) return res.status(400).json({ error: "Email and password required" });
 
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const user = await findUserByEmail(email);
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
-    let workspaceId: string | null = null;
-    let workspaceTier = "starter";
-    if (user.organizationId) {
-      const sdr = await ensureOrgSdr(user.organizationId);
-      workspaceId = sdr.workspaceId;
-      workspaceTier = sdr.tier;
-    }
-
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-        organizationId: user.organizationId,
-        workspaceId,
-        tier: workspaceTier,
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    const responsePayload = {
-      token,
-      user: publicUser(user, { workspaceId, tier: workspaceTier }),
-    };
-
-    console.log("🔑 Login response:", JSON.stringify(responsePayload, null, 2));
-
-    res.json(responsePayload);
+    const session = await issueSession(user);
+    res.json({
+      ...session,
+      resumeOnboarding: user.onboardingComplete === false,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

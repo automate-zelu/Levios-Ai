@@ -140,15 +140,8 @@ export function OnboardingStep1({ onSubscribed }) {
       )}
 
       <p style={{ fontSize: 11, color: COLORS.textDim, marginTop: 16, lineHeight: 1.45 }}>
-        Already paid? This page refreshes every few seconds. Locally without Stripe, ask an admin to activate the workspace.
+        Already paid? This page refreshes every few seconds while Stripe confirms your subscription.
       </p>
-      <button
-        type="button"
-        style={{ ...S.btn("ghost"), marginTop: 12, width: "100%", minHeight: 44 }}
-        onClick={() => onSubscribed?.()}
-      >
-        Continue without checkout (dev)
-      </button>
     </div>
   );
 }

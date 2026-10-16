@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { COLORS, S } from "../../theme.js";
 import { leadsApi, settingsApi, calendarApi, sdrApi, auth, billingApi } from "../../api.js";
 import { KnowledgeBaseInput } from "../sdr/KnowledgeBaseInput.jsx";
@@ -390,35 +390,14 @@ export function LevviChannels({ onNext, onSkip }) {
   );
 }
 
-function parseLeadLines(text) {
-  const lines = String(text || "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const out = [];
-  for (const line of lines) {
-    const parts = line.includes("\t") ? line.split("\t") : line.split(",");
-    const [name = "", email = "", phone = ""] = parts.map((p) => p.trim());
-    if (!name && !email && !phone) continue;
-    const [firstName, ...rest] = name.split(/\s+/);
-    out.push({
-      firstName: firstName || "Lead",
-      lastName: rest.join(" ") || "",
-      email: email || undefined,
-      phone: phone || undefined,
-      source: "Levvi import",
-      status: "new",
-    });
-  }
-  return out;
-}
-
 export function LevviImportLeads({ draft, onDraftChange, onNext }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [existing, setExisting] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const fileRef = useRef(null);
 
   useEffect(() => {
     leadsApi.list().then((list) => {
@@ -427,10 +406,11 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
     }).catch(() => setExisting(0));
   }, []);
 
-  const importLeads = async () => {
-    const rows = parseLeadLines(text);
+  const runImport = async (raw) => {
+    const { parseLeadCsv } = await import("../../lib/levvi-lead-import.js");
+    const rows = parseLeadCsv(raw, { max: 100 });
     if (!rows.length) {
-      setErr("Paste at least one line: Name, email, phone");
+      setErr("No leads found. Use the template columns: first_name, last_name, email, phone");
       return;
     }
     setBusy(true);
@@ -438,7 +418,7 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
     setMsg("");
     let ok = 0;
     try {
-      for (const row of rows.slice(0, 50)) {
+      for (const row of rows) {
         await leadsApi.create(row);
         ok += 1;
       }
@@ -452,6 +432,27 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
     }
   };
 
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErr("");
+    setFileName(file.name);
+    try {
+      const { readFileAsText } = await import("../../lib/levvi-lead-import.js");
+      const raw = await readFileAsText(file);
+      setText(raw);
+    } catch (ex) {
+      setErr(ex.message || "Could not read file");
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const downloadTemplate = async () => {
+    const { downloadLeadCsvTemplate } = await import("../../lib/levvi-lead-import.js");
+    downloadLeadCsvTemplate();
+  };
+
   const skip = () => {
     onDraftChange({ ...draft, leadsSkipped: true });
     onNext();
@@ -461,14 +462,38 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
     <div>
       <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Import leads</h3>
       <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 12px", lineHeight: 1.5 }}>
-        Paste CSV-style lines: <code style={{ color: COLORS.orangeLight }}>Name, email, phone</code>
+        Upload a CSV (or export from Google Sheets: File → Download → CSV), or paste rows.
         {existing != null ? ` · You already have ${existing} lead${existing === 1 ? "" : "s"}.` : ""}
       </p>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        <button type="button" style={S.btn("ghost")} onClick={downloadTemplate}>
+          Download CSV template
+        </button>
+        <button
+          type="button"
+          style={S.btn("ghost")}
+          onClick={() => fileRef.current?.click()}
+        >
+          Upload CSV / Sheets export
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,text/csv,text/plain,.tsv"
+          style={{ display: "none" }}
+          onChange={onFile}
+        />
+      </div>
+      {fileName ? (
+        <p style={{ fontSize: 12, color: COLORS.textDim, margin: "0 0 8px" }}>Loaded: {fileName}</p>
+      ) : null}
+
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={6}
-        placeholder={"Jane Doe, jane@example.com, +15551234567\nJohn Smith, john@example.com,"}
+        rows={7}
+        placeholder={"first_name,last_name,email,phone\nJane,Doe,jane@example.com,+15551234567"}
         style={{ ...S.input, width: "100%", marginBottom: 12, fontFamily: "ui-monospace, monospace", fontSize: 12 }}
       />
       {err && (
@@ -477,7 +502,7 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
         </div>
       )}
       {msg && <p style={{ fontSize: 12, color: COLORS.green, marginBottom: 12 }}>{msg}</p>}
-      <PrimaryButton onClick={importLeads} busy={busy} disabled={!text.trim()}>
+      <PrimaryButton onClick={() => runImport(text)} busy={busy} disabled={!text.trim()}>
         Import &amp; continue →
       </PrimaryButton>
       <GhostButton onClick={skip}>Skip — I&apos;ll add leads later</GhostButton>
@@ -601,13 +626,9 @@ export function LevviKnowledge({ draft, onDraftChange, onComplete }) {
           <button type="button" style={{ ...S.btn("primary"), width: "100%" }} onClick={startCheckout}>
             Open Stripe checkout
           </button>
-          <button
-            type="button"
-            style={{ ...S.btn("ghost"), width: "100%", marginTop: 8 }}
-            onClick={() => setBilling({ ...billing, sdr: { ...(billing.sdr || {}), isActive: true } })}
-          >
-            Continue without checkout (dev)
-          </button>
+          <p style={{ fontSize: 11, color: COLORS.textDim, margin: "10px 0 0", lineHeight: 1.45 }}>
+            After checkout, this step refreshes automatically. If billing looks stuck, contact support.
+          </p>
         </div>
       )}
 
@@ -673,5 +694,4 @@ export function LevviKnowledge({ draft, onDraftChange, onComplete }) {
   );
 }
 
-// silence unused ref warning if tree-shaken — keep parse helper exported for tests
-export { parseLeadLines };
+export { parseLeadCsv } from "../../lib/levvi-lead-import.js";
