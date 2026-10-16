@@ -1,6 +1,5 @@
 // ─── LEVVI ONBOARDING HELPERS (P4) ───────────────────────────────────────────
-// Pure helpers for the first-login Levvi wizard.
-// Step progress + draft live in localStorage; completion on the user record.
+// Knowledge is skippable; Launch requires paid billing (no free / limited unpaid tier).
 
 export const ONBOARDING_STORAGE_KEY = "catalyst_onboarding_step";
 export const ONBOARDING_FLAG_KEY = "catalyst_needs_onboarding";
@@ -15,10 +14,13 @@ export const ONBOARDING_STEP_LABELS = [
   "Leads",
   "Agent",
   "Knowledge",
+  "Launch",
 ] as const;
 
 export const LEVVI_STEP_COUNT = ONBOARDING_STEP_LABELS.length;
 export const LEVVI_LAST_STEP = LEVVI_STEP_COUNT - 1;
+export const LEVVI_KB_STEP = 7;
+export const LEVVI_LAUNCH_STEP = 8;
 
 export type OnboardingStepIndex = number;
 
@@ -127,6 +129,12 @@ export function isKbStepComplete(config: {
   return !!(config?.knowledgeBase && String(config.knowledgeBase).trim().length >= 40);
 }
 
+export function isBillingActive(billing: {
+  sdr?: { isActive?: boolean } | null;
+} | null | undefined): boolean {
+  return !!billing?.sdr?.isActive;
+}
+
 export function firstIncompleteLevviStep(input: {
   draft?: Record<string, unknown>;
   billing?: { sdr?: { isActive?: boolean } | null } | null;
@@ -142,12 +150,14 @@ export function firstIncompleteLevviStep(input: {
 } = {}): number {
   const draft = input.draft || {};
   const config = input.config || null;
+  const billing = input.billing || null;
   const leadCount = input.leadCount || 0;
 
   if (!isBusinessDraftComplete(draft as { companyName?: string; industry?: string })) return 2;
   if (!isAvailabilityDraftComplete(draft as { timezone?: string; weekdayStart?: string; weekdayEnd?: string })) return 3;
   if (leadCount <= 0 && !draft.leadsSkipped) return 5;
   if (!isConfigureStepComplete(config)) return 6;
-  if (!isKbStepComplete(config) && !draft.kbSkipped) return 7;
-  return LEVVI_LAST_STEP;
+  if (!isKbStepComplete(config) && !draft.kbSkipped) return LEVVI_KB_STEP;
+  if (!isBillingActive(billing)) return LEVVI_LAUNCH_STEP;
+  return LEVVI_LAUNCH_STEP;
 }

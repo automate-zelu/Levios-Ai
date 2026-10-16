@@ -206,8 +206,8 @@ describe("P4 exit — Levvi onboarding", () => {
       firstIncompleteLevviStep,
       shouldShowOnboarding,
     } = await import("../lib/onboarding.js");
-    assert.equal(ONBOARDING_STEP_LABELS.length, 8);
-    assert.equal(LEVVI_LAST_STEP, 7);
+    assert.equal(ONBOARDING_STEP_LABELS.length, 9);
+    assert.equal(LEVVI_LAST_STEP, 8);
     assert.deepEqual([...ONBOARDING_STEP_LABELS], [
       "Welcome",
       "Catalyst",
@@ -217,6 +217,7 @@ describe("P4 exit — Levvi onboarding", () => {
       "Leads",
       "Agent",
       "Knowledge",
+      "Launch",
     ]);
     assert.equal(shouldShowOnboarding({ role: "user", onboardingComplete: false }), true);
     assert.equal(firstIncompleteLevviStep({}), 2);

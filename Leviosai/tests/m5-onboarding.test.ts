@@ -17,8 +17,8 @@ import {
 } from "../lib/onboarding.js";
 
 describe("M5 / P4 Levvi onboarding helpers", () => {
-  it("exposes eight Levvi step labels", () => {
-    assert.equal(ONBOARDING_STEP_LABELS.length, 8);
+  it("exposes nine Levvi step labels (Knowledge + Launch)", () => {
+    assert.equal(ONBOARDING_STEP_LABELS.length, 9);
     assert.deepEqual([...ONBOARDING_STEP_LABELS], [
       "Welcome",
       "Catalyst",
@@ -28,16 +28,17 @@ describe("M5 / P4 Levvi onboarding helpers", () => {
       "Leads",
       "Agent",
       "Knowledge",
+      "Launch",
     ]);
-    assert.equal(LEVVI_LAST_STEP, 7);
+    assert.equal(LEVVI_LAST_STEP, 8);
   });
 
-  it("clamps step indices to 0–7", () => {
+  it("clamps step indices to 0–8", () => {
     assert.equal(clampOnboardingStep(-1), 0);
     assert.equal(clampOnboardingStep(0), 0);
     assert.equal(clampOnboardingStep(4), 4);
-    assert.equal(clampOnboardingStep(7), 7);
-    assert.equal(clampOnboardingStep(99), 7);
+    assert.equal(clampOnboardingStep(8), 8);
+    assert.equal(clampOnboardingStep(99), 8);
     assert.equal(clampOnboardingStep("3"), 3);
     assert.equal(clampOnboardingStep("nope"), 0);
   });

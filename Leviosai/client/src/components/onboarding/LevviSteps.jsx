@@ -510,50 +510,159 @@ export function LevviImportLeads({ draft, onDraftChange, onNext }) {
   );
 }
 
-export function LevviKnowledge({ draft, onDraftChange, onComplete }) {
+/** Step 8 — Knowledge only (skippable). Does not finish onboarding or activate billing. */
+export function LevviKnowledge({ draft, onDraftChange, onNext }) {
   const [kb, setKb] = useState("");
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activate, setActivate] = useState(true);
   const [err, setErr] = useState("");
-  const [billing, setBilling] = useState(null);
-  const [done, setDone] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      sdrApi.getConfig().catch(() => null),
-      billingApi.getStatus().catch(() => null),
-    ]).then(([cfg, bill]) => {
-      if (cancelled) return;
-      setConfig(cfg);
-      if (cfg?.knowledgeBase) setKb(cfg.knowledgeBase);
-      setBilling(bill);
-      setLoading(false);
-    });
+    sdrApi.getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setConfig(cfg);
+        if (cfg?.knowledgeBase) setKb(cfg.knowledgeBase);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
-  const finish = async ({ skipKb = false } = {}) => {
+  const saveAndContinue = async () => {
+    if (!config) {
+      setErr("Save your agent configuration first, then return here.");
+      return;
+    }
     setSaving(true);
     setErr("");
     try {
-      if (!skipKb && config) {
-        await sdrApi.saveConfig({
-          systemPrompt: config.systemPrompt,
-          smsTemplate: config.smsTemplate,
-          emailSubject: config.emailSubject,
-          emailBody: config.emailBody,
-          dormantDays: config.dormantDays ?? 7,
-          waitCallHrs: config.waitCallHrs ?? 2,
-          waitSmsHrs: config.waitSmsHrs ?? 4,
-          reEnrollDays: config.reEnrollDays ?? 30,
-          knowledgeBase: kb || null,
-        });
-      } else if (skipKb) {
-        onDraftChange({ ...draft, kbSkipped: true });
+      await sdrApi.saveConfig({
+        systemPrompt: config.systemPrompt,
+        smsTemplate: config.smsTemplate,
+        emailSubject: config.emailSubject,
+        emailBody: config.emailBody,
+        dormantDays: config.dormantDays ?? 7,
+        waitCallHrs: config.waitCallHrs ?? 2,
+        waitSmsHrs: config.waitSmsHrs ?? 4,
+        reEnrollDays: config.reEnrollDays ?? 30,
+        knowledgeBase: kb || null,
+      });
+      onDraftChange({ ...draft, kbSkipped: false });
+      onNext?.();
+    } catch (e) {
+      setErr(e.message || "Failed to save knowledge base");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const skipKb = () => {
+    onDraftChange({ ...draft, kbSkipped: true });
+    onNext?.();
+  };
+
+  if (loading) {
+    return <p style={{ color: COLORS.textMuted, fontSize: 14 }}>Loading knowledge base…</p>;
+  }
+
+  return (
+    <div>
+      <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Knowledge base</h3>
+      <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 14px", lineHeight: 1.5 }}>
+        Upload FAQs, services, and pricing. You can skip this and add knowledge later — billing is next and required to go live.
+      </p>
+      <KnowledgeBaseInput value={kb} onChange={setKb} bare />
+      {err && (
+        <div role="alert" style={{ marginTop: 12, marginBottom: 12, padding: "9px 13px", borderRadius: 8, background: `${COLORS.red}20`, color: COLORS.red, fontSize: 12 }}>
+          {err}
+        </div>
+      )}
+      <div style={{ marginTop: 16 }}>
+        <PrimaryButton onClick={saveAndContinue} busy={saving}>
+          Save knowledge &amp; continue →
+        </PrimaryButton>
+        <GhostButton onClick={skipKb}>Skip KB for now →</GhostButton>
+      </div>
+    </div>
+  );
+}
+
+const BILLING_POLL_MS = 3000;
+
+/**
+ * Step 9 — Launch: Stripe billing required (no unpaid / limited free use).
+ * Then optionally activate AI SDR and enter the dashboard.
+ */
+export function LevviLaunch({ onComplete }) {
+  const [billing, setBilling] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [activate, setActivate] = useState(true);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  const refreshBilling = async () => {
+    try {
+      const status = await billingApi.getStatus();
+      setBilling(status);
+      return status;
+    } catch (e) {
+      setErr(e.message || "Failed to load billing");
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await refreshBilling();
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const paid = !!billing?.sdr?.isActive;
+
+  useEffect(() => {
+    if (paid || loading) return undefined;
+    const id = setInterval(() => { refreshBilling(); }, BILLING_POLL_MS);
+    return () => clearInterval(id);
+  }, [paid, loading]);
+
+  const startCheckout = async () => {
+    setCheckoutBusy(true);
+    setErr("");
+    try {
+      const origin = window.location.origin;
+      const res = await billingApi.checkout(
+        "monthly",
+        `${origin}/?onboarding=1&checkout=success`,
+        `${origin}/?onboarding=1&checkout=cancel`
+      );
+      if (res?.url) {
+        window.location.href = res.url;
+        return;
       }
+      setErr("Checkout did not return a URL");
+    } catch (e) {
+      setErr(e.message || "Checkout failed");
+    } finally {
+      setCheckoutBusy(false);
+    }
+  };
+
+  const finish = async () => {
+    if (!paid) {
+      setErr("Activate billing with Stripe before entering the dashboard. There is no unpaid limited mode.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    try {
       if (activate) {
         await sdrApi.setStatus(true);
       }
@@ -567,118 +676,117 @@ export function LevviKnowledge({ draft, onDraftChange, onComplete }) {
     }
   };
 
-  const startCheckout = async () => {
-    try {
-      const origin = window.location.origin;
-      const res = await billingApi.checkout(
-        "monthly",
-        `${origin}/?onboarding=1&checkout=success`,
-        `${origin}/?onboarding=1&checkout=cancel`
-      );
-      if (res?.url) window.location.href = res.url;
-    } catch (e) {
-      setErr(e.message || "Checkout failed");
-    }
-  };
-
   if (loading) {
-    return <p style={{ color: COLORS.textMuted, fontSize: 14 }}>Loading knowledge base…</p>;
+    return <p style={{ color: COLORS.textMuted, fontSize: 14 }}>Checking billing…</p>;
   }
 
   if (done) {
     return (
       <div style={{ textAlign: "center", padding: "8px 0" }}>
-        <h3 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 8px" }}>You&apos;re ready to launch</h3>
+        <h3 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 8px" }}>You&apos;re live</h3>
         <p style={{ color: COLORS.textMuted, fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-          Levvi setup is complete. Open the dashboard to manage leads and your AI SDR.
+          Billing is active and Levvi setup is complete. Open the dashboard to manage leads and your AI SDR.
         </p>
       </div>
     );
   }
 
-  const needsBilling = billing && !billing?.sdr?.isActive;
+  const feeLabel = billing?.commercialPricing?.monthlyFeeEnabled
+    ? `${billing.commercialPricing.monthlyFeeLabel} / mo`
+    : "Monthly retainer (set by admin)";
 
   return (
     <div>
-      <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Knowledge base &amp; launch</h3>
-      <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 14px", lineHeight: 1.5 }}>
-        Upload FAQs, services, and pricing. One agent × many KBs — industry specifics live here.
+      <h3 style={{ fontSize: 18, fontWeight: 700, margin: "0 0 6px" }}>Launch &amp; billing</h3>
+      <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "0 0 16px", lineHeight: 1.5 }}>
+        Catalyst requires an active monthly subscription to use the product. There is no free or unpaid limited tier.
       </p>
-      <KnowledgeBaseInput value={kb} onChange={setKb} bare />
-
-      {needsBilling && (
-        <div
-          style={{
-            marginTop: 16,
-            marginBottom: 12,
-            padding: "14px 16px",
-            background: COLORS.surfaceAlt,
-            borderRadius: 10,
-            border: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <div style={{ fontWeight: 650, fontSize: 13, marginBottom: 6 }}>Activate billing</div>
-          <p style={{ fontSize: 12, color: COLORS.textMuted, margin: "0 0 10px", lineHeight: 1.45 }}>
-            {billing?.commercialPricing?.monthlyFeeEnabled
-              ? `${billing.commercialPricing.monthlyFeeLabel} / mo`
-              : "Monthly fee may be off for your account"}
-          </p>
-          <button type="button" style={{ ...S.btn("primary"), width: "100%" }} onClick={startCheckout}>
-            Open Stripe checkout
-          </button>
-          <p style={{ fontSize: 11, color: COLORS.textDim, margin: "10px 0 0", lineHeight: 1.45 }}>
-            After checkout, this step refreshes automatically. If billing looks stuck, contact support.
-          </p>
-        </div>
-      )}
 
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
           padding: "14px 16px",
+          marginBottom: 16,
           background: COLORS.surfaceAlt,
-          borderRadius: 12,
+          borderRadius: 10,
           border: `1px solid ${COLORS.border}`,
-          margin: "16px 0",
         }}
       >
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Activate AI SDR now?</div>
-          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>
-            Start engaging enrolled leads after launch.
-          </div>
+        <div style={{ fontWeight: 650, fontSize: 13, marginBottom: 6 }}>
+          {paid ? "Billing active" : "Activate billing"}
         </div>
-        <button
-          type="button"
-          aria-pressed={activate}
-          onClick={() => setActivate((a) => !a)}
+        <p style={{ fontSize: 12, color: COLORS.textMuted, margin: "0 0 10px", lineHeight: 1.45 }}>
+          {feeLabel}
+          {paid ? " · Your workspace is ready to go live." : " · Complete Stripe checkout to continue."}
+        </p>
+        {!paid && (
+          <>
+            <button
+              type="button"
+              style={{ ...S.btn("primary"), width: "100%", opacity: checkoutBusy ? 0.7 : 1 }}
+              onClick={startCheckout}
+              disabled={checkoutBusy || billing?.stripeConfigured === false}
+            >
+              {checkoutBusy ? "Redirecting to Stripe…" : "Open Stripe checkout"}
+            </button>
+            <p style={{ fontSize: 11, color: COLORS.textDim, margin: "10px 0 0", lineHeight: 1.45 }}>
+              After checkout, this page refreshes automatically. If billing looks stuck, contact support.
+            </p>
+          </>
+        )}
+        {paid && (
+          <p style={{ fontSize: 12, color: COLORS.green, margin: 0 }}>✓ Subscription confirmed</p>
+        )}
+      </div>
+
+      {paid && (
+        <div
           style={{
-            width: 48,
-            height: 26,
-            borderRadius: 13,
-            border: "none",
-            cursor: "pointer",
-            background: activate ? COLORS.green : COLORS.border,
-            position: "relative",
-            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 14,
+            padding: "14px 16px",
+            background: COLORS.surfaceAlt,
+            borderRadius: 12,
+            border: `1px solid ${COLORS.border}`,
+            marginBottom: 16,
           }}
         >
-          <div
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Activate AI SDR now?</div>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>
+              Start engaging enrolled leads after you enter the dashboard.
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-pressed={activate}
+            onClick={() => setActivate((a) => !a)}
             style={{
-              position: "absolute",
-              top: 3,
-              left: activate ? 24 : 3,
-              width: 20,
-              height: 20,
-              borderRadius: "50%",
-              background: "#fff",
-              pointerEvents: "none",
+              width: 48,
+              height: 26,
+              borderRadius: 13,
+              border: "none",
+              cursor: "pointer",
+              background: activate ? COLORS.green : COLORS.border,
+              position: "relative",
+              flexShrink: 0,
             }}
-          />
-        </button>
-      </div>
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 3,
+                left: activate ? 24 : 3,
+                width: 20,
+                height: 20,
+                borderRadius: "50%",
+                background: "#fff",
+                pointerEvents: "none",
+              }}
+            />
+          </button>
+        </div>
+      )}
 
       {err && (
         <div role="alert" style={{ marginBottom: 12, padding: "9px 13px", borderRadius: 8, background: `${COLORS.red}20`, color: COLORS.red, fontSize: 12 }}>
@@ -686,10 +794,13 @@ export function LevviKnowledge({ draft, onDraftChange, onComplete }) {
         </div>
       )}
 
-      <PrimaryButton onClick={() => finish({ skipKb: false })} busy={saving}>
-        {activate ? "Save KB, activate & enter dashboard →" : "Save KB & enter dashboard →"}
+      <PrimaryButton onClick={finish} busy={saving} disabled={!paid}>
+        {!paid
+          ? "Complete checkout to finish →"
+          : activate
+            ? "Activate SDR & enter dashboard →"
+            : "Enter dashboard →"}
       </PrimaryButton>
-      <GhostButton onClick={() => finish({ skipKb: true })}>Skip KB for now &amp; finish</GhostButton>
     </div>
   );
 }

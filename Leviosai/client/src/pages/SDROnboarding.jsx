@@ -24,6 +24,7 @@ import {
   LevviChannels,
   LevviImportLeads,
   LevviKnowledge,
+  LevviLaunch,
 } from "../components/onboarding/LevviSteps.jsx";
 
 function BrandMark() {
@@ -216,7 +217,7 @@ export default function SDROnboarding({ user, onComplete }) {
     onComplete?.();
   };
 
-  const wide = step === 6 || step === 7;
+  const wide = step === 6 || step === 7 || step === 8;
 
   return (
     <div
@@ -283,8 +284,11 @@ export default function SDROnboarding({ user, onComplete }) {
               <LevviKnowledge
                 draft={draft}
                 onDraftChange={updateDraft}
-                onComplete={handleFinished}
+                onNext={() => go(8)}
               />
+            )}
+            {step === 8 && (
+              <LevviLaunch onComplete={handleFinished} />
             )}
           </div>
         )}

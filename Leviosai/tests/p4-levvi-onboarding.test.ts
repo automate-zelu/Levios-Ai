@@ -23,7 +23,7 @@ function read(rel: string) {
 }
 
 describe("P4 Levvi onboarding", () => {
-  it("defines the eight Levvi wizard steps from the plan", () => {
+  it("defines Levvi wizard steps with separate Knowledge and Launch", () => {
     assert.deepEqual([...ONBOARDING_STEP_LABELS], [
       "Welcome",
       "Catalyst",
@@ -33,6 +33,7 @@ describe("P4 Levvi onboarding", () => {
       "Leads",
       "Agent",
       "Knowledge",
+      "Launch",
     ]);
   });
 
@@ -147,6 +148,7 @@ describe("P4 Levvi onboarding", () => {
     assert.match(shell, /firstIncompleteLevviStep/);
     assert.match(shell, /LevviWelcome/);
     assert.match(shell, /LevviKnowledge/);
+    assert.match(shell, /LevviLaunch/);
     assert.match(shell, /hideKnowledgeBase/);
 
     const steps = read("client/src/components/onboarding/LevviSteps.jsx");
@@ -154,6 +156,9 @@ describe("P4 Levvi onboarding", () => {
     assert.match(steps, /speechSynthesis/);
     assert.match(steps, /Import leads/);
     assert.match(steps, /Connect channels/);
+    assert.match(steps, /Skip KB for now/);
+    assert.match(steps, /no free or unpaid limited tier/i);
+    assert.doesNotMatch(steps, /Skip KB for now &amp; finish|without checkout/i);
   });
 
   it("documents voice spike and NL backlog", () => {
