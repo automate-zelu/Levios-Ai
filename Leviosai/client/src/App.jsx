@@ -16,6 +16,8 @@ import AdminPanel from "./pages/AdminPanel.jsx";
 import LeadDetailPage from "./pages/LeadDetailPage.jsx";
 import BookingsPage from "./pages/BookingsPage.jsx";
 import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
+import NotFoundPage from "./pages/NotFoundPage.jsx";
+import { isKnownAppPath, isKnownPublicPath } from "./lib/known-routes.js";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
 import {
   applyHandoffPrefill,
@@ -766,6 +768,7 @@ function LoginPage({ onLogin }) {
     setLoading(true);
     setError("");
     try {
+      clearToken(); // drop any stale JWT before credential check
       const res = await auth.login(email, pass);
       setToken(res.token);
       if (res.user?.onboardingComplete === false || res.resumeOnboarding) {
@@ -966,8 +969,10 @@ function AdminLoginPage({ onLogin }) {
     setLoading(true);
     setError("");
     try {
+      clearToken(); // drop any stale JWT before credential check
       const res = await auth.login(email, pass);
       if (res.user.role !== "admin") {
+        clearToken();
         setError("Operator access only. This portal is restricted to Leviosai administrators.");
         setLoading(false);
         return;
@@ -3905,6 +3910,16 @@ export default function CatalystApp() {
   if (location.pathname === "/privacy") return <PublicPrivacyPage />;
   if (location.pathname === "/terms") return <PublicTermsPage />;
 
+  // ── Custom 404 for unknown public URLs (before login shell) ────────────────
+  if (!loggedIn && !isKnownPublicPath(location.pathname) && location.pathname !== "/register") {
+    return (
+      <NotFoundPage
+        homeLabel="Go to sign in"
+        onHome={() => navigate("/", { replace: true })}
+      />
+    );
+  }
+
   // ── /admin-login route — public, no auth required ──────────────────────────
   if (location.pathname === "/admin-login") {
     // Already logged in — wait for userRole to resolve before redirecting
@@ -4001,6 +4016,16 @@ export default function CatalystApp() {
     );
   }
 
+  // ── Custom 404 for unknown authenticated CRM paths ─────────────────────────
+  if (loggedIn && userRole !== "admin" && !isKnownAppPath(location.pathname)) {
+    return (
+      <NotFoundPage
+        homeLabel="Back to dashboard"
+        onHome={() => navigate("/", { replace: true })}
+      />
+    );
+  }
+
   // ── /admin route guard — only redirect if role is definitively not admin
   // (userRole === null means state is still loading — don't redirect yet)
   if (isAdminAppPath(location.pathname) && userRole !== null && userRole !== "admin") {
@@ -4083,7 +4108,13 @@ export default function CatalystApp() {
       case "Email Inbox":
         navigate("/inbox?channel=email", { replace: true });
         return null;
-      default: return <DashboardPage setPage={navigateTo} />;
+      default:
+        return (
+          <NotFoundPage
+            homeLabel="Back to dashboard"
+            onHome={() => navigateTo("Dashboard")}
+          />
+        );
     }
   };
 

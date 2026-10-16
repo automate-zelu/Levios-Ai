@@ -19,14 +19,30 @@ export function isAuthenticated() {
   return !!getToken();
 }
 
+function isAuthCredentialPath(path) {
+  return (
+    path.startsWith("/api/auth/login") ||
+    path.startsWith("/api/auth/register") ||
+    path.startsWith("/api/integrations/onboarding/exchange")
+  );
+}
+
 async function request(path, options = {}) {
   const token = getToken();
   const headers = { "Content-Type": "application/json", ...options.headers };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  // Don't send a stale JWT on login/register — it confuses 401 handling
+  if (token && !isAuthCredentialPath(path)) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
+    // Wrong email/password must surface as credentials error, not "Session expired"
+    if (isAuthCredentialPath(path)) {
+      const err = await res.json().catch(() => ({ error: "Invalid credentials" }));
+      throw new Error(err.error || "Invalid credentials");
+    }
     clearToken();
     window.location.reload();
     throw new Error("Session expired");

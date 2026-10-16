@@ -1,0 +1,15 @@
+# Catalyst / Leviosai
+User-agent: *
+Allow: /home
+Allow: /privacy
+Allow: /terms
+Disallow: /admin
+Disallow: /admin-login
+Disallow: /api/
+Disallow: /billing
+Disallow: /settings
+Disallow: /sdr
+Disallow: /inbox
+Disallow: /leads
+
+Sitemap: https://leviosa.zeluai.ca/sitemap.xml
