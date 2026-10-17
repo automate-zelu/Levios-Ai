@@ -29,7 +29,20 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
 
     let subscription = null;
     if (org.stripeSubscriptionId) {
-      subscription = await getSubscriptionStatus(org.stripeSubscriptionId);
+      try {
+        subscription = await getSubscriptionStatus(org.stripeSubscriptionId);
+      } catch (err: any) {
+        // Stale/deleted Stripe ids must not 500 the whole Billing page
+        console.warn(
+          `[billing] subscription lookup failed for org ${req.organizationId}:`,
+          err?.message || err
+        );
+        subscription = {
+          id: org.stripeSubscriptionId,
+          status: "missing",
+          error: err?.message || "Subscription not found in Stripe",
+        };
+      }
     }
 
     const planKey = (org.plan || "free") as keyof typeof PLANS;

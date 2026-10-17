@@ -75,6 +75,19 @@ describe("test call voice errors", () => {
   });
 });
 
+describe("test call LLM sanitization", () => {
+  it("maps realtime speech models to a chat-completions LLM for rehearsal", async () => {
+    const { resolveLlmModel, DEFAULT_LLM_MODEL } = await import("../lib/agent-stack.js");
+    assert.equal(resolveLlmModel("gpt-realtime-2.1"), DEFAULT_LLM_MODEL);
+    assert.equal(resolveLlmModel("gpt-realtime"), DEFAULT_LLM_MODEL);
+    assert.equal(resolveLlmModel("gpt-4o-mini"), "gpt-4o-mini");
+    const sdr = readFileSync(path.join(root, "routes/sdr.ts"), "utf8");
+    assert.match(sdr, /resolveLlmModel\(\(cfg as any\)\?\.llmModel\)/);
+    const agent = readFileSync(path.join(root, "lib/calling/langchain-agent.ts"), "utf8");
+    assert.match(agent, /resolveLlmModel/);
+  });
+});
+
 describe("test call wiring", () => {
   it("exposes start route, websocket upgrade, and SDR Agent Test call control", () => {
     const sdr = readFileSync(path.join(root, "routes/sdr.ts"), "utf8");

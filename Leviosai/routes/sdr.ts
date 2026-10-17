@@ -845,15 +845,17 @@ router.post("/api/sdr/test-call", async (req: Request, res: Response) => {
       .select()
       .from(sdrConfigs)
       .where(eq(sdrConfigs.workspaceId, req.workspace.id));
+    const { resolveLlmModel, resolveSttModel, resolveTtsModel } = await import("../lib/agent-stack.js");
     const { sessionId } = createBrowserTestCall({
       workspaceId: req.workspace.id,
       organizationId: req.organizationId,
       systemPrompt,
       assistantName: req.body?.assistantName || cfg?.assistantName || null,
       assistantVoiceId: req.body?.assistantVoiceId || cfg?.assistantVoiceId || null,
-      sttModel: (cfg as any)?.sttModel || null,
-      llmModel: (cfg as any)?.llmModel || null,
-      ttsModel: (cfg as any)?.ttsModel || null,
+      sttModel: resolveSttModel((cfg as any)?.sttModel),
+      // Never pass gpt-realtime* into ChatOpenAI — map to a chat model for rehearsal
+      llmModel: resolveLlmModel((cfg as any)?.llmModel),
+      ttsModel: resolveTtsModel((cfg as any)?.ttsModel),
       allowPaid,
       budgetSeconds: budget.budgetSeconds,
     });

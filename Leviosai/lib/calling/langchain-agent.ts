@@ -4,7 +4,7 @@
 
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatAnthropic } from "@langchain/anthropic";
-import { isClaudeModel } from "../agent-stack.js";
+import { isClaudeModel, resolveLlmModel } from "../agent-stack.js";
 import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 import {
   AIMessage,
@@ -25,7 +25,9 @@ import { hasCalendarPromptBlock } from "../calendar/prompt-block.js";
 const MAX_TOOL_ROUNDS = 3;
 
 function createCallLlm(model: string, temperature: number): ChatOpenAI | ChatAnthropic {
-  const id = model || "gpt-4o";
+  // Realtime speech models (gpt-realtime*) are stored on llm_model for live phone,
+  // but browser rehearsal / LangChain must use a chat-completions model.
+  const id = resolveLlmModel(model);
   if (isClaudeModel(id) && process.env.ANTHROPIC_API_KEY) {
     return new ChatAnthropic({
       model: id,
@@ -103,7 +105,7 @@ export class LangChainCallAgent {
     this.toolsEnabled =
       !!normalized.organizationId && hasCalendarPromptBlock(normalized.systemPrompt);
 
-    this.llmModel = normalized.llmModel || "gpt-4o";
+    this.llmModel = resolveLlmModel(normalized.llmModel);
     this.llm = createCallLlm(this.llmModel, 0.3);
 
     this.tools = this.buildTools();
