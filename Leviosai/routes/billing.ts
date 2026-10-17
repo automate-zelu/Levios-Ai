@@ -70,6 +70,8 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
     const commercial = await getOrgCommercialPricing(req.organizationId);
     const platformDefaults = await getPlatformCommercialDefaults();
     const servicePause = await getOrgBillingPauseState(req.organizationId);
+    const { getOutboundGateState } = await import("../lib/outbound-gate.js");
+    const outboundGate = await getOutboundGateState(req.organizationId);
 
     res.json({
       plan: planKey,
@@ -101,6 +103,9 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
         lastError: org.lastBillingError || null,
       },
       servicePause,
+      outboundBlocked: !outboundGate.allowed,
+      outboundBlockReason: outboundGate.reason,
+      outboundBlockMessage: outboundGate.message,
       stripeConfigured: isStripeConfigured(),
       pricingModel: "monthly_retainer_plus_per_appointment",
       pricingFootnote: PER_APPOINTMENT_FOOTNOTE,

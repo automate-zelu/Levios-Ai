@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
 import { messagesApi, leadsApi, messagingApi, aiApi } from "../api.js";
 import { parseEmailContent, emailPreviewLine } from "../lib/emailMessage.js";
+import OutboundBlockedBanner from "../components/OutboundBlockedBanner.jsx";
+import { useOutboundGate } from "../lib/outbound-gate-context.jsx";
 import "./message-inbox.css";
 
 function initials(first, last, fallback) {
@@ -31,6 +33,7 @@ function formatRelative(iso) {
  */
 export default function MessageInboxPage({ channel: channelProp = "all" }) {
   const navigate = useNavigate();
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
   const [searchParams, setSearchParams] = useSearchParams();
   const channelFromQuery = searchParams.get("channel");
   const channel =
@@ -177,6 +180,10 @@ export default function MessageInboxPage({ channel: channelProp = "all" }) {
   const sendSms = async () => {
     const text = draft.trim();
     if (!canComposeSms || !selectedLeadId || !text || sending) return;
+    if (outboundBlocked) {
+      setError(outboundBlockMessage || "SMS is locked until billing is active.");
+      return;
+    }
     setSending(true);
     setError("");
     try {
@@ -217,12 +224,20 @@ export default function MessageInboxPage({ channel: channelProp = "all" }) {
 
   return (
     <div className={`message-inbox ${canComposeSms ? "is-sms" : "is-mail"}`}>
+      <div style={{ padding: "12px 16px 0" }}>
+        <OutboundBlockedBanner
+          blocked={outboundBlocked}
+          message={outboundBlockMessage}
+          onOpenBilling={() => navigate("/billing")}
+          compact
+        />
+      </div>
       <header className="message-inbox-hero">
         <div className="message-inbox-hero-top">
           <div>
             <div className="message-inbox-kicker">Lead communications</div>
             <h1>{title}</h1>
-            <p>{subtitle}</p>
+            <p>{outboundBlocked ? "Sending is locked until billing is active." : subtitle}</p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
@@ -428,21 +443,28 @@ export default function MessageInboxPage({ channel: channelProp = "all" }) {
                       <textarea
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
-                        placeholder={`Reply to ${selectedName.split(" ")[0] || "lead"}…`}
+                        placeholder={
+                          outboundBlocked
+                            ? "Messaging locked — activate billing to send."
+                            : `Reply to ${selectedName.split(" ")[0] || "lead"}…`
+                        }
                         aria-label="SMS reply"
+                        disabled={outboundBlocked}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendSms();
                         }}
                       />
                       <div className="message-inbox-composer-bar">
                         <em className={over ? "is-over" : ""}>
-                          {draft.length}/160{over ? " · will split on some carriers" : " · ⌘ Enter to send"}
+                          {outboundBlocked
+                            ? "Outbound SMS locked"
+                            : `${draft.length}/160${over ? " · will split on some carriers" : " · ⌘ Enter to send"}`}
                         </em>
                         <div style={{ display: "flex", gap: 8 }}>
                           <button
                             type="button"
                             className="message-inbox-btn message-inbox-btn--ghost"
-                            disabled={drafting}
+                            disabled={drafting || outboundBlocked}
                             onClick={draftReply}
                           >
                             {drafting ? "Drafting…" : "Draft reply"}
@@ -450,10 +472,10 @@ export default function MessageInboxPage({ channel: channelProp = "all" }) {
                           <button
                             type="button"
                             className="message-inbox-btn message-inbox-btn--primary"
-                            disabled={sending || !draft.trim()}
+                            disabled={sending || !draft.trim() || outboundBlocked}
                             onClick={sendSms}
                           >
-                            {sending ? "Sending…" : "Send SMS"}
+                            {sending ? "Sending…" : outboundBlocked ? "Send locked" : "Send SMS"}
                           </button>
                         </div>
                       </div>

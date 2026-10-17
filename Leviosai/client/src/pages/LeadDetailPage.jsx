@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { COLORS, S } from "../theme.js";
 import { leadsApi, messagingApi } from "../api.js";
+import OutboundBlockedBanner from "../components/OutboundBlockedBanner.jsx";
+import { useOutboundGate } from "../lib/outbound-gate-context.jsx";
 import { LeadSequencesPanel } from "../components/sdr/LeadSequencesPanel.jsx";
 import LeadEditDrawer, { parseLeadNotes } from "../components/leads/LeadEditDrawer.jsx";
 import { LeadTimelinePanel } from "../components/leads/LeadTimelinePanel.jsx";
@@ -40,6 +42,7 @@ export default function LeadDetailPage({ onNavigate }) {
   const leadId = paramLeadId || location.pathname.match(/^\/leads\/([^/]+)/)?.[1];
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
   const [lead, setLead] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +116,10 @@ export default function LeadDetailPage({ onNavigate }) {
   };
 
   const startCall = async () => {
+    if (outboundBlocked) {
+      setError(outboundBlockMessage || "Calling is locked until billing is active.");
+      return;
+    }
     setBusy("call");
     try {
       await messagingApi.initiateCall(lead.id);
@@ -212,13 +219,44 @@ export default function LeadDetailPage({ onNavigate }) {
             <button type="button" style={S.btn("secondary")} onClick={() => setEditOpen(true)}>
               ✏️ Edit
             </button>
-            <button type="button" style={S.btn("primary")} disabled={busy === "call"} onClick={startCall}>
-              {busy === "call" ? "Calling…" : "📞 Call"}
+            <button
+              type="button"
+              style={S.btn("primary")}
+              disabled={busy === "call" || outboundBlocked}
+              title={outboundBlocked ? outboundBlockMessage : undefined}
+              onClick={startCall}
+            >
+              {busy === "call" ? "Calling…" : outboundBlocked ? "📞 Call locked" : "📞 Call"}
             </button>
-            <button type="button" style={S.btn("secondary")} onClick={() => openInbox("sms")}>💬 SMS</button>
-            <button type="button" style={S.btn("secondary")} onClick={() => openInbox("email")}>✉️ Email</button>
+            <button
+              type="button"
+              style={S.btn("secondary")}
+              disabled={outboundBlocked}
+              title={outboundBlocked ? outboundBlockMessage : undefined}
+              onClick={() => openInbox("sms")}
+            >
+              💬 SMS
+            </button>
+            <button
+              type="button"
+              style={S.btn("secondary")}
+              disabled={outboundBlocked}
+              title={outboundBlocked ? outboundBlockMessage : undefined}
+              onClick={() => openInbox("email")}
+            >
+              ✉️ Email
+            </button>
           </div>
         </header>
+
+        <div style={{ margin: "0 24px 12px" }}>
+          <OutboundBlockedBanner
+            blocked={outboundBlocked}
+            message={outboundBlockMessage}
+            onOpenBilling={() => navigate("/billing")}
+            compact
+          />
+        </div>
 
         {error && (
           <div style={{ margin: "0 24px 12px", padding: "10px 14px", borderRadius: 8, background: `${COLORS.red}18`, color: COLORS.red, fontSize: 13 }}>

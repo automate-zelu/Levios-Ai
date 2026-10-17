@@ -1,10 +1,11 @@
 // ─── TIER ENFORCEMENT MIDDLEWARE ─────────────────────────────────────────────
-// Commercial pricing has no lead/minute caps. This only blocks inactive accounts.
+// Commercial pricing has no lead/minute caps. Blocks inactive / unpaid outbound.
 
 import { Request, Response, NextFunction } from "express";
 import { db } from "../lib/db.js";
 import { workspaces } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
+import { getOutboundGateState, outboundGateHttp } from "../lib/outbound-gate.js";
 
 export async function enforceTierLimits(req: Request, res: Response, next: NextFunction) {
   const workspaceId = req.workspace?.id;
@@ -21,11 +22,10 @@ export async function enforceTierLimits(req: Request, res: Response, next: NextF
     return res.status(404).json({ error: "Workspace not found" });
   }
 
-  if (!workspace.isActive) {
-    return res.status(403).json({
-      error: "SDR features require an active subscription",
-      subscribe: "/billing",
-    });
+  const gate = await getOutboundGateState(workspace.organizationId);
+  if (!gate.allowed) {
+    const { status, body } = outboundGateHttp(gate);
+    return res.status(status).json(body);
   }
 
   next();

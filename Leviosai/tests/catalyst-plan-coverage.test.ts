@@ -112,7 +112,8 @@ describe("P1 exit — billing & pricing", () => {
     assert.equal(shouldAutoPauseOnPaymentFailure({ pauseExempt: true }), false);
     assert.equal(shouldAutoPauseOnPaymentFailure({}), true);
     assert.match(SERVICE_PAUSED_BANNER, /Service paused/);
-    assert.match(read("client/src/App.jsx"), /Service paused — update payment/);
+    assert.match(read("client/src/App.jsx"), /OutboundBlockedBanner|OutboundGateProvider/);
+    assert.match(read("lib/outbound-gate.ts"), /OUTBOUND_INACTIVE_MESSAGE|outboundBlocked/);
     assert.match(read("lib/stripe.ts"), /pauseOrgForNonPayment|resumeOrgAfterPayment/);
   });
 

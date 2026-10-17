@@ -173,6 +173,16 @@ router.post("/api/leads/:id/messages", requireAuth, async (req, res) => {
     const lead = await storage.getLead(parseInt(req.params.id), req.organizationId);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
 
+    const direction = String(req.body?.direction || "outbound").toLowerCase();
+    if (direction !== "inbound") {
+      const { getOutboundGateState, outboundGateHttp } = await import("../lib/outbound-gate.js");
+      const gate = await getOutboundGateState(req.organizationId);
+      if (!gate.allowed) {
+        const { status, body } = outboundGateHttp(gate);
+        return res.status(status).json(body);
+      }
+    }
+
     const msg = await storage.createLeadMessage({
       ...req.body,
       leadId: parseInt(req.params.id),

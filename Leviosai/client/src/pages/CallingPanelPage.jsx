@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { COLORS, S, formatDuration } from "../theme.js";
 import { callApi } from "../api.js";
 import { RecordingPlayer } from "../components/calling/RecordingPlayer.jsx";
 import { TranscriptViewer } from "../components/calling/TranscriptViewer.jsx";
 import { SdrFlowTimeline } from "../components/sdr/SdrFlowTimeline.jsx";
+import OutboundBlockedBanner from "../components/OutboundBlockedBanner.jsx";
+import { useOutboundGate } from "../lib/outbound-gate-context.jsx";
 
 const OUTCOME_META = {
   booked: { label: "Booking made", color: COLORS.green, tone: "success", short: "Booked" },
@@ -39,6 +42,8 @@ const FILTERS = [
 ];
 
 export default function CallingPanelPage() {
+  const navigate = useNavigate();
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
   const [sessions, setSessions] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -127,11 +132,20 @@ export default function CallingPanelPage() {
     );
   }
 
+  const lockBanner = (
+    <OutboundBlockedBanner
+      blocked={outboundBlocked}
+      message={outboundBlockMessage}
+      onOpenBilling={() => navigate("/billing")}
+    />
+  );
+
   if (view === "detail" && selected) {
     const sessionView = detail?.session || selected;
     const meta = outcomeMeta(sessionView?.outcome);
     return (
       <div>
+        {lockBanner}
         <button type="button" style={{ ...S.btn("ghost"), marginBottom: 16 }} onClick={() => setView("list")}>
           ← Back to call log
         </button>
@@ -141,6 +155,7 @@ export default function CallingPanelPage() {
             ...S.card,
             borderTop: `3px solid ${meta.color}`,
             marginBottom: 16,
+            opacity: outboundBlocked ? 0.55 : 1,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -199,10 +214,13 @@ export default function CallingPanelPage() {
 
   return (
     <div>
+      {lockBanner}
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>AI Calling</h2>
         <p style={{ color: COLORS.textMuted, fontSize: 13, margin: "4px 0 0" }}>
-          Outbound dial performance — bookings, answers, and misses
+          {outboundBlocked
+            ? "Outbound dials are locked until billing is active."
+            : "Outbound dial performance — bookings, answers, and misses"}
         </p>
       </div>
 

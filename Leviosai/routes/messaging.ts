@@ -7,12 +7,13 @@ import { workspaces, sdrCallSessions } from "../lib/schema.js";
 import { eq } from "drizzle-orm";
 import { sendOutboundSms, workspacePhoneConnected, workspaceFromNumber, placeOutboundCall, resolveVoiceProvider } from "../lib/telephony.js";
 import { liveCallRegistry } from "../lib/calling/live-call-registry.js";
+import { getOutboundGateState, outboundGateHttp } from "../lib/outbound-gate.js";
 
 const router = Router();
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-async function getWorkspaceForOrg(organizationId: string) {
+async function getWorkspaceForOrg(organizationId: number) {
   const [ws] = await db
     .select()
     .from(workspaces)
@@ -20,10 +21,20 @@ async function getWorkspaceForOrg(organizationId: string) {
   return ws ?? null;
 }
 
+async function denyIfOutboundBlocked(req: Request, res: Response): Promise<boolean> {
+  const gate = await getOutboundGateState(req.organizationId);
+  if (gate.allowed) return false;
+  const { status, body } = outboundGateHttp(gate);
+  res.status(status).json(body);
+  return true;
+}
+
 // ─── POST /api/leads/:id/sms ──────────────────────────────────────────────────
 
 router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Response) => {
   try {
+    if (await denyIfOutboundBlocked(req, res)) return;
+
     const lead = await storage.getLead(parseInt(req.params.id), req.organizationId);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     if (!lead.phone) return res.status(400).json({ error: "Lead has no phone number" });
@@ -36,7 +47,7 @@ router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Respons
       error: "Phone/SMS not connected — add Twilio or Telnyx in SDR Setup",
     };
 
-    const ws = await getWorkspaceForOrg(req.organizationId);
+    const ws = await getWorkspaceForOrg(req.organizationId!);
     if (ws && workspacePhoneConnected(ws)) {
       try {
         const sent = await sendOutboundSms(ws, { to: lead.phone, body: message });
@@ -79,6 +90,8 @@ router.post("/api/leads/:id/sms", requireAuth, async (req: Request, res: Respons
 
 router.post("/api/leads/:id/email", requireAuth, async (req: Request, res: Response) => {
   try {
+    if (await denyIfOutboundBlocked(req, res)) return;
+
     const lead = await storage.getLead(parseInt(req.params.id), req.organizationId);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     if (!lead.email) return res.status(400).json({ error: "Lead has no email" });
@@ -126,11 +139,13 @@ router.post("/api/leads/:id/email", requireAuth, async (req: Request, res: Respo
 
 router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Response) => {
   try {
+    if (await denyIfOutboundBlocked(req, res)) return;
+
     const lead = await storage.getLead(parseInt(req.params.id), req.organizationId);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     if (!lead.phone) return res.status(400).json({ error: "Lead has no phone number" });
 
-    const ws = await getWorkspaceForOrg(req.organizationId);
+    const ws = await getWorkspaceForOrg(req.organizationId!);
     if (!ws || !workspacePhoneConnected(ws)) {
       return res.status(400).json({ error: "Phone not connected — add Twilio or Telnyx in SDR Setup" });
     }
@@ -186,13 +201,20 @@ router.post("/api/leads/:id/call", requireAuth, async (req: Request, res: Respon
 
 router.get("/api/integrations/status", requireAuth, async (req: Request, res: Response) => {
   try {
-    const ws = await getWorkspaceForOrg(req.organizationId);
+    const ws = await getWorkspaceForOrg(req.organizationId!);
+    const gate = await getOutboundGateState(req.organizationId);
     res.json({
       twilio: !!(ws?.twilioSubAccountSid && ws?.twilioPhoneNumber),
       telnyx: !!(ws?.telnyxApiKey && ws?.telnyxPhoneNumber),
       phone: workspacePhoneConnected(ws || {}),
       activeProvider: resolveVoiceProvider(ws || {}),
       resend: isResendConfigured(),
+      outboundAllowed: gate.allowed,
+      outboundBlocked: !gate.allowed,
+      outboundBlockReason: gate.reason,
+      outboundBlockMessage: gate.message,
+      workspaceActive: gate.workspaceActive,
+      servicePaused: gate.servicePaused,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

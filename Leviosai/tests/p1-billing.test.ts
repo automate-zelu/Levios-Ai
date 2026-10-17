@@ -200,7 +200,10 @@ describe("P1.4 — non-payment pause", () => {
     assert.match(schema, /pauseExempt|pause_exempt/);
     assert.match(schema, /usage_events|usageEvents/);
     const app = readFileSync(path.join(root, "client/src/App.jsx"), "utf8");
-    assert.match(app, /Service paused — update payment/);
+    assert.match(app, /OutboundBlockedBanner|OutboundGateProvider/);
+    const banner = readFileSync(path.join(root, "client/src/components/OutboundBlockedBanner.jsx"), "utf8");
+    assert.match(banner, /Calling &amp; messaging locked|Calling & messaging locked/);
+    assert.match(SERVICE_PAUSED_BANNER, /Service paused — update payment/);
     const billing = readFileSync(path.join(root, "client/src/pages/BillingPage.jsx"), "utf8");
     assert.match(billing, /servicePause/);
   });

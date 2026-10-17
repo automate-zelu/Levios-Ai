@@ -17,8 +17,10 @@ import LeadDetailPage from "./pages/LeadDetailPage.jsx";
 import BookingsPage from "./pages/BookingsPage.jsx";
 import { PublicHomePage, PublicPrivacyPage, PublicTermsPage } from "./pages/PublicLegalPages.jsx";
 import NotFoundPage from "./pages/NotFoundPage.jsx";
+import OutboundBlockedBanner from "./components/OutboundBlockedBanner.jsx";
 import { isKnownAppPath, isKnownPublicPath } from "./lib/known-routes.js";
 import { shouldShowOnboarding, clearOnboardingStorage, ONBOARDING_FLAG_KEY } from "./lib/onboarding.js";
+import { OutboundGateProvider, useOutboundGate } from "./lib/outbound-gate-context.jsx";
 import {
   applyHandoffPrefill,
   readHandoffCodeFromSearch,
@@ -1324,6 +1326,7 @@ function LeadActionShell({ icon, title, subtitle, lead, onClose, children, width
 // SMS + Email composer. One component handles both via the `channel` prop.
 function SendMessageModal({ lead, channel, onClose, onSent }) {
   const isEmail = channel === "email";
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -1331,6 +1334,10 @@ function SendMessageModal({ lead, channel, onClose, onSent }) {
   const [error, setError] = useState("");
 
   const generate = async () => {
+    if (outboundBlocked) {
+      setError(outboundBlockMessage || "Messaging is locked until billing is active.");
+      return;
+    }
     setError(""); setGenerating(true);
     try {
       const gen = await aiApi.generateMessage(lead.id, channel);
@@ -1344,6 +1351,10 @@ function SendMessageModal({ lead, channel, onClose, onSent }) {
   };
 
   const send = async () => {
+    if (outboundBlocked) {
+      setError(outboundBlockMessage || "Messaging is locked until billing is active.");
+      return;
+    }
     if (!body.trim()) { setError("Message body is required."); return; }
     if (isEmail && !subject.trim()) { setError("Subject is required."); return; }
     setError(""); setSending(true);
@@ -1363,13 +1374,24 @@ function SendMessageModal({ lead, channel, onClose, onSent }) {
     <LeadActionShell
       icon={isEmail ? "✉️" : "💬"}
       title={isEmail ? "Send Email" : "Send SMS"}
-      subtitle={isEmail ? `Delivered via Resend · ${lead.email || "no email on file"}` : `Delivered via Twilio · ${lead.phone || "no phone on file"}`}
+      subtitle={
+        outboundBlocked
+          ? "Locked — activate billing to send"
+          : isEmail
+            ? `Delivered via Resend · ${lead.email || "no email on file"}`
+            : `Delivered via Twilio · ${lead.phone || "no phone on file"}`
+      }
       lead={lead}
       onClose={onClose}
     >
+      {outboundBlocked && (
+        <div style={{ padding: "10px 12px", borderRadius: 8, background: `${COLORS.red}22`, color: COLORS.red, fontSize: 12, marginBottom: 14 }}>
+          {outboundBlockMessage || "Outbound messaging is locked until billing is active."}
+        </div>
+      )}
       {error && <div style={{ padding: "10px 12px", borderRadius: 8, background: `${COLORS.red}22`, color: COLORS.red, fontSize: 12, marginBottom: 14 }}>{error}</div>}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-        <button type="button" onClick={generate} disabled={generating}
+        <button type="button" onClick={generate} disabled={generating || outboundBlocked}
           style={{ ...S.btn("ghost"), fontSize: 11, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 6 }}>
           <span>🤖</span><span>{generating ? "Generating…" : "Generate with AI"}</span>
         </button>
@@ -1392,8 +1414,8 @@ function SendMessageModal({ lead, channel, onClose, onSent }) {
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-        <button onClick={send} disabled={sending} style={S.btn("primary")}>
-          {sending ? "Sending…" : isEmail ? "✉️ Send Email" : "💬 Send SMS"}
+        <button onClick={send} disabled={sending || outboundBlocked} style={S.btn("primary")}>
+          {sending ? "Sending…" : outboundBlocked ? "Send locked" : isEmail ? "✉️ Send Email" : "💬 Send SMS"}
         </button>
       </div>
     </LeadActionShell>
@@ -1402,11 +1424,16 @@ function SendMessageModal({ lead, channel, onClose, onSent }) {
 
 // Voice-AI call confirmation modal (branded replacement for confirm/alert).
 function CallConfirmModal({ lead, onClose, onCalled }) {
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
   const [placing, setPlacing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
 
   const place = async () => {
+    if (outboundBlocked) {
+      setError(outboundBlockMessage || "Calling is locked until billing is active.");
+      return;
+    }
     setError(""); setPlacing(true);
     try {
       const r = await messagingApi.initiateCall(lead.id);
@@ -1429,15 +1456,22 @@ function CallConfirmModal({ lead, onClose, onCalled }) {
       width={480}
     >
       {error && <div style={{ padding: "10px 12px", borderRadius: 8, background: `${COLORS.red}22`, color: COLORS.red, fontSize: 12, marginBottom: 14 }}>{error}</div>}
+      {outboundBlocked && !result && (
+        <div style={{ padding: "10px 12px", borderRadius: 8, background: `${COLORS.red}22`, color: COLORS.red, fontSize: 12, marginBottom: 14 }}>
+          {outboundBlockMessage || "Calling is locked until billing is active."}
+        </div>
+      )}
       {!result ? (
         <>
           <p style={{ fontSize: 13, color: COLORS.textMuted, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
-            Your Leviosai Voice AI agent will dial this lead, disclose it's an AI per TCPA, and handle the conversation with your configured talk track. The call will be recorded and transcribed.
+            {outboundBlocked
+              ? "Outbound AI calling is locked for this workspace. Activate billing to place calls."
+              : "Your Leviosai Voice AI agent will dial this lead, disclose it's an AI per TCPA, and handle the conversation with your configured talk track. The call will be recorded and transcribed."}
           </p>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <button onClick={onClose} style={S.btn("ghost")}>Cancel</button>
-            <button onClick={place} disabled={placing} style={S.btn("primary")}>
-              {placing ? "Connecting…" : "📞 Start Call"}
+            <button onClick={place} disabled={placing || outboundBlocked} style={S.btn("primary")}>
+              {placing ? "Connecting…" : outboundBlocked ? "📞 Call locked" : "📞 Start Call"}
             </button>
           </div>
         </>
@@ -3746,7 +3780,6 @@ export default function CatalystApp() {
   const [notifItems, setNotifItems] = useState([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const notifRef = useRef(null);
-  const [servicePaused, setServicePaused] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(
     () => !!localStorage.getItem(ONBOARDING_FLAG_KEY)
   );
@@ -3856,17 +3889,6 @@ export default function CatalystApp() {
         .catch(() => { clearToken(); setLoggedIn(false); });
     }
   }, [loggedIn]);
-
-  useEffect(() => {
-    if (!loggedIn) {
-      setServicePaused(false);
-      return;
-    }
-    billingApi
-      .getStatus()
-      .then((b) => setServicePaused(!!b?.servicePause?.servicePaused))
-      .catch(() => setServicePaused(false));
-  }, [loggedIn, location.pathname]);
 
   // When user object arrives from login/register with onboardingComplete
   useEffect(() => {
@@ -4120,6 +4142,61 @@ export default function CatalystApp() {
 
   return (
     <SettingsProvider>
+    <OutboundGateProvider enabled={loggedIn}>
+    <CatalystShell
+      testCallOpen={testCallOpen}
+      S={S}
+      COLORS={COLORS}
+      sidebarOpen={sidebarOpen}
+      setSidebarOpen={setSidebarOpen}
+      sidebarCollapsed={sidebarCollapsed}
+      setSidebarCollapsed={setSidebarCollapsed}
+      NAV={navItems}
+      page={page}
+      navigateTo={navigateTo}
+      user={user}
+      handleLogout={handleLogout}
+      notifRef={notifRef}
+      notifOpen={notifOpen}
+      setNotifOpen={setNotifOpen}
+      notifItems={notifItems}
+      notifLoading={notifLoading}
+      openNotifications={openNotifications}
+      isLeadDetail={isLeadDetail}
+      isMessageInbox={isMessageInbox}
+      renderPage={renderPage}
+    />
+    </OutboundGateProvider>
+    </SettingsProvider>
+  );
+}
+
+function CatalystShell({
+  testCallOpen,
+  S,
+  COLORS,
+  sidebarOpen,
+  setSidebarOpen,
+  sidebarCollapsed,
+  setSidebarCollapsed,
+  NAV,
+  page,
+  navigateTo,
+  user,
+  handleLogout,
+  notifRef,
+  notifOpen,
+  setNotifOpen,
+  notifItems,
+  notifLoading,
+  openNotifications,
+  isLeadDetail,
+  isMessageInbox,
+  renderPage,
+}) {
+  const { blocked: outboundBlocked, message: outboundBlockMessage } = useOutboundGate();
+
+  return (
     <div className={`catalyst-app${testCallOpen ? " is-test-call" : ""}`} style={S.app}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
 
@@ -4149,7 +4226,7 @@ export default function CatalystApp() {
           </div>
         </div>
         <div style={S.sidebarNav}>
-          {navItems.map((item, i) => {
+          {NAV.map((item, i) => {
             if (item.section) return <div key={i} className="nav-section nav-section-label" style={S.navSection}>{item.section}</div>;
             return (
               <div
@@ -4242,44 +4319,15 @@ export default function CatalystApp() {
                 : S.content
           }
         >
-          {servicePaused && (
-            <div
-              role="alert"
-              style={{
-                marginBottom: isLeadDetail || isMessageInbox ? 0 : 16,
-                padding: "12px 16px",
-                borderRadius: 10,
-                background: "rgba(231,76,60,0.12)",
-                border: "1px solid rgba(231,76,60,0.45)",
-                color: "#f5b7b1",
-                fontSize: 13,
-                lineHeight: 1.45,
-              }}
-            >
-              Service paused — update payment to resume outbound AI calling, SMS, and email.{" "}
-              <button
-                type="button"
-                onClick={() => navigateTo("Billing")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: COLORS.orange,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontSize: 13,
-                  textDecoration: "underline",
-                  padding: 0,
-                }}
-              >
-                Open Billing
-              </button>
-            </div>
-          )}
+          <OutboundBlockedBanner
+            blocked={outboundBlocked}
+            message={outboundBlockMessage}
+            onOpenBilling={() => navigateTo("Billing")}
+            compact={isLeadDetail || isMessageInbox}
+          />
           {renderPage()}
         </div>
       </div>
     </div>
-    </SettingsProvider>
   );
 }
