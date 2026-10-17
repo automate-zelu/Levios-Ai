@@ -172,3 +172,19 @@ describe("M9 KB source delete route", () => {
     assert.match(ui, /handleRemove|removeKbSource/);
   });
 });
+
+describe("M9 KB extract", () => {
+  it("uses pdf-parse PDFParse class (v2) and extracts text files", async () => {
+    const src = readFileSync(path.join(root, "lib/calling/kb-extract.ts"), "utf8");
+    assert.match(src, /PDFParse/);
+    assert.doesNotMatch(src, /pdfParse\(buffer\)/);
+    const { extractKnowledgeBaseFile } = await import("../lib/calling/kb-extract.js");
+    const out = await extractKnowledgeBaseFile(
+      "notes.txt",
+      Buffer.from("We install heat pumps in Denver.", "utf8")
+    );
+    assert.equal(out.filename, "notes.txt");
+    assert.match(out.text, /heat pumps/);
+    assert.match(out.block, /--- Source: notes\.txt ---/);
+  });
+});

@@ -1,12 +1,9 @@
 // Extract plain text from KB uploads (PDF, Word, text).
 
-import { createRequire } from "node:module";
 import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
+import { PDFParse } from "pdf-parse";
 import { formatKbSourceBlock } from "./kb-helpers.js";
-
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text?: string }>;
 
 const MAX_CHARS_PER_FILE = 200_000;
 
@@ -27,8 +24,14 @@ function clip(text: string): string {
 }
 
 async function extractPdf(buffer: Buffer): Promise<string> {
-  const data = await pdfParse(buffer);
-  return String(data?.text || "");
+  // pdf-parse v2+: class API (v1 was a default function — that broke with "pdfParse is not a function")
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const data = await parser.getText();
+    return String(data?.text || "");
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
 }
 
 async function extractDocx(buffer: Buffer): Promise<string> {
