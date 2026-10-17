@@ -65,6 +65,52 @@ export function appendKnowledgeBaseDocuments(
   return parts.join("\n\n");
 }
 
+export type KbSourceDoc = { filename: string; body: string };
+
+/**
+ * Split free-form notes + labeled upload blocks (`--- Source: file ---`).
+ * Uploads always use formatKbSourceBlock so they can be listed/removed as files.
+ */
+export function splitKnowledgeBase(kb: string | null | undefined): {
+  preamble: string;
+  sources: KbSourceDoc[];
+} {
+  const text = (kb || "").replace(/\r\n/g, "\n");
+  const re = /--- Source: (.+?) ---\n/g;
+  const matches = [...text.matchAll(re)];
+  if (!matches.length) return { preamble: text.trim(), sources: [] };
+
+  const firstIdx = matches[0].index ?? 0;
+  const preamble = text.slice(0, firstIdx).trim();
+  const sources: KbSourceDoc[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const filename = (matches[i][1] || "").trim() || "document";
+    const bodyStart = (matches[i].index ?? 0) + matches[i][0].length;
+    const bodyEnd = i + 1 < matches.length ? (matches[i + 1].index ?? text.length) : text.length;
+    const body = text.slice(bodyStart, bodyEnd).trim();
+    sources.push({ filename, body });
+  }
+  return { preamble, sources };
+}
+
+export function listKnowledgeBaseSources(kb: string | null | undefined): string[] {
+  return splitKnowledgeBase(kb).sources.map((s) => s.filename);
+}
+
+/** Remove all upload blocks with this filename (case-insensitive). Keeps free-form notes. */
+export function removeKnowledgeBaseSource(
+  kb: string | null | undefined,
+  filename: string
+): string {
+  const want = (filename || "").trim().toLowerCase();
+  if (!want) return (kb || "").trim();
+  const { preamble, sources } = splitKnowledgeBase(kb);
+  const kept = sources.filter((s) => s.filename.toLowerCase() !== want);
+  if (kept.length === sources.length) return (kb || "").trim();
+  const blocks = kept.map((s) => formatKbSourceBlock(s.filename, s.body));
+  return appendKnowledgeBaseDocuments(preamble, blocks);
+}
+
 /**
  * Decide whether to re-embed on config save.
  * Rebuild when KB text changed, or when never embedded / no vectors yet.

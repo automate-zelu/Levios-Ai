@@ -274,10 +274,18 @@ export const sdrApi = {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
+      if (res.status === 502 || res.status === 504) {
+        throw new Error("Server was restarting — wait a few seconds and upload again.");
+      }
       throw new Error(err.error || "Upload failed");
     }
     return res.json();
   },
+  removeKbSource: (filename) =>
+    request("/api/sdr/kb/source", {
+      method: "DELETE",
+      body: JSON.stringify({ filename }),
+    }),
   setStatus: (isActive) => request("/api/sdr/config/status", { method: "PATCH", body: JSON.stringify({ isActive }) }),
   getEnrollments: (params = {}) => {
     const qs = new URLSearchParams(params).toString();

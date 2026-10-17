@@ -20,7 +20,12 @@ import { workspaceScope } from "../middleware/workspaceScope.js";
 import { enforceTierLimits } from "../middleware/tierEnforcement.js";
 import { evaluateEnrollmentEligibility } from "../lib/sdr-eligibility.js";
 import { buildWorkspaceVectorStore } from "../lib/calling/langchain-kb.js";
-import { shouldRebuildKnowledgeBase, appendKnowledgeBaseDocuments } from "../lib/calling/kb-helpers.js";
+import {
+  shouldRebuildKnowledgeBase,
+  appendKnowledgeBaseDocuments,
+  listKnowledgeBaseSources,
+  removeKnowledgeBaseSource,
+} from "../lib/calling/kb-helpers.js";
 import { extractKnowledgeBaseFile } from "../lib/calling/kb-extract.js";
 import { SDR_TEMPLATE_VARS } from "../lib/sdr-template-vars.js";
 import {
@@ -60,7 +65,9 @@ router.get("/api/sdr/config", async (req: Request, res: Response) => {
       .from(sdrConfigs)
       .where(eq(sdrConfigs.workspaceId, workspaceId));
 
-    res.json(config ?? null);
+    if (!config) return res.json(null);
+    (config as any).sources = listKnowledgeBaseSources(config.knowledgeBase);
+    res.json(config);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -210,9 +217,52 @@ router.post("/api/sdr/kb/upload", kbUpload.array("files", 8), async (req: Reques
     }
 
     (config as any).uploaded = uploaded;
+    (config as any).sources = listKnowledgeBaseSources(knowledgeBase);
     res.json(config);
   } catch (err: any) {
     res.status(400).json({ error: err.message || "Could not read that file" });
+  }
+});
+
+// ─── DELETE /api/sdr/kb/source ───────────────────────────────────────────────
+// Remove one uploaded file's extracted text from the KB and rebuild embeddings.
+router.delete("/api/sdr/kb/source", async (req: Request, res: Response) => {
+  try {
+    const workspaceId = req.workspace!.id;
+    const filename = String(req.body?.filename || "").trim();
+    if (!filename) return res.status(400).json({ error: "filename is required" });
+
+    const [existing] = await db
+      .select()
+      .from(sdrConfigs)
+      .where(eq(sdrConfigs.workspaceId, workspaceId));
+    if (!existing) return res.status(404).json({ error: "No SDR config yet" });
+
+    const before = existing.knowledgeBase || "";
+    const knowledgeBase = removeKnowledgeBaseSource(before, filename);
+    if (knowledgeBase === before.trim()) {
+      return res.status(404).json({ error: `No uploaded file named “${filename}” in the knowledge base` });
+    }
+
+    const [config] = await db
+      .update(sdrConfigs)
+      .set({ knowledgeBase, updatedAt: new Date() })
+      .where(eq(sdrConfigs.id, existing.id))
+      .returning();
+
+    try {
+      const result = await buildWorkspaceVectorStore(workspaceId, knowledgeBase);
+      (config as any).kbChunks = result.chunks;
+    } catch (err: any) {
+      console.error(`KB embed after source remove failed for ${workspaceId}:`, err.message);
+      (config as any).kbEmbedError = err.message;
+    }
+
+    (config as any).removed = filename;
+    (config as any).sources = listKnowledgeBaseSources(knowledgeBase);
+    res.json(config);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Could not remove that file" });
   }
 });
 

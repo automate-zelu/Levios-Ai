@@ -14,6 +14,9 @@ import {
   shouldRebuildKnowledgeBase,
   formatKbSourceBlock,
   appendKnowledgeBaseDocuments,
+  listKnowledgeBaseSources,
+  removeKnowledgeBaseSource,
+  splitKnowledgeBase,
   KB_CHUNK_SIZE,
   KB_CHUNK_OVERLAP,
   KB_EMBEDDING_MODEL,
@@ -136,5 +139,36 @@ describe("M9 KB file append", () => {
     assert.match(next, /Company notes/);
     assert.match(next, /faq\.pdf/);
     assert.match(next, /Denver/);
+  });
+
+  it("lists uploaded sources and removes one without wiping free-form notes", () => {
+    const kb = appendKnowledgeBaseDocuments("Company notes", [
+      formatKbSourceBlock("faq.pdf", "We service Denver."),
+      formatKbSourceBlock("rates.docx", "Tune-up $99."),
+    ]);
+    assert.deepEqual(listKnowledgeBaseSources(kb), ["faq.pdf", "rates.docx"]);
+    const { preamble, sources } = splitKnowledgeBase(kb);
+    assert.equal(preamble, "Company notes");
+    assert.equal(sources.length, 2);
+
+    const after = removeKnowledgeBaseSource(kb, "faq.pdf");
+    assert.deepEqual(listKnowledgeBaseSources(after), ["rates.docx"]);
+    assert.match(after, /Company notes/);
+    assert.match(after, /Tune-up/);
+    assert.doesNotMatch(after, /Denver/);
+    assert.doesNotMatch(after, /faq\.pdf/);
+  });
+});
+
+describe("M9 KB source delete route", () => {
+  it("wires DELETE /api/sdr/kb/source and client removeKbSource", () => {
+    const sdr = readFileSync(path.join(root, "routes/sdr.ts"), "utf8");
+    assert.match(sdr, /\/api\/sdr\/kb\/source/);
+    assert.match(sdr, /removeKnowledgeBaseSource/);
+    const api = readFileSync(path.join(root, "client/src/api.js"), "utf8");
+    assert.match(api, /removeKbSource/);
+    const ui = readFileSync(path.join(root, "client/src/components/sdr/KnowledgeBaseInput.jsx"), "utf8");
+    assert.match(ui, /Uploaded knowledge files/);
+    assert.match(ui, /handleRemove|removeKbSource/);
   });
 });
