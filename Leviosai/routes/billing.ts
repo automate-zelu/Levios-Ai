@@ -224,9 +224,33 @@ router.post("/api/billing/portal", requireAuth, async (req: Request, res: Respon
     }
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
-    const session = await createPortalSession(org.stripeCustomerId, `${baseUrl}/billing`);
-
-    res.json({ url: session.url });
+    try {
+      const session = await createPortalSession(org.stripeCustomerId, `${baseUrl}/billing`);
+      return res.json({ url: session.url });
+    } catch (err: any) {
+      const msg = String(err?.message || err || "");
+      // Stale Stripe customer ids (deleted / wrong mode) — clear so checkout can recreate
+      if (/no such customer/i.test(msg) || err?.code === "resource_missing") {
+        console.warn(
+          `[billing] clearing stale stripe customer for org ${req.organizationId}:`,
+          msg
+        );
+        await db
+          .update(organizations)
+          .set({
+            stripeCustomerId: null,
+            stripeSubscriptionId: null,
+            lastBillingError: null,
+          } as any)
+          .where(eq(organizations.id, req.organizationId));
+        return res.status(400).json({
+          error: "Previous payment account is no longer valid. Use Activate monthly billing to set up a new card.",
+          code: "stale_stripe_customer",
+          subscribe: "/billing",
+        });
+      }
+      throw err;
+    }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
