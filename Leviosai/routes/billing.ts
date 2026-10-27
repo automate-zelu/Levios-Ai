@@ -32,16 +32,26 @@ router.get("/api/billing", requireAuth, async (req: Request, res: Response) => {
       try {
         subscription = await getSubscriptionStatus(org.stripeSubscriptionId);
       } catch (err: any) {
+        const { isStripeMissingResourceError, clearOrgStripeBillingIds } = await import(
+          "../lib/stripe-hygiene.js"
+        );
         // Stale/deleted Stripe ids must not 500 the whole Billing page
         console.warn(
           `[billing] subscription lookup failed for org ${req.organizationId}:`,
           err?.message || err
         );
-        subscription = {
-          id: org.stripeSubscriptionId,
-          status: "missing",
-          error: err?.message || "Subscription not found in Stripe",
-        };
+        if (isStripeMissingResourceError(err)) {
+          await clearOrgStripeBillingIds(req.organizationId, { clearPause: false });
+          org.stripeSubscriptionId = null as any;
+          org.stripeCustomerId = null as any;
+          subscription = null;
+        } else {
+          subscription = {
+            id: org.stripeSubscriptionId,
+            status: "missing",
+            error: err?.message || "Subscription not found in Stripe",
+          };
+        }
       }
     }
 
@@ -176,11 +186,21 @@ router.post("/api/billing/checkout", requireAuth, async (req: Request, res: Resp
     const org = await storage.getOrganization(req.organizationId);
     if (!org) return res.status(404).json({ error: "Organization not found" });
 
-    let customerId = org.stripeCustomerId;
-    if (!customerId) {
-      const customer = await createStripeCustomer(org.id, req.userEmail!, org.name);
-      if (!customer) return res.status(500).json({ error: "Failed to create Stripe customer" });
-      customerId = customer.id;
+    const { ensureLiveStripeCustomerId, isStripeMissingResourceError, clearOrgStripeBillingIds } =
+      await import("../lib/stripe-hygiene.js");
+
+    let customerId: string;
+    try {
+      const ensured = await ensureLiveStripeCustomerId({
+        organizationId: org.id,
+        email: req.userEmail!,
+        organizationName: org.name,
+        currentCustomerId: org.stripeCustomerId,
+        createCustomer: createStripeCustomer,
+      });
+      customerId = ensured.customerId;
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Failed to create Stripe customer" });
     }
 
     const { getOrgCommercialPricing } = await import("../lib/commercial-pricing-service.js");
@@ -196,17 +216,28 @@ router.post("/api/billing/checkout", requireAuth, async (req: Request, res: Resp
     const baseUrl = `${req.protocol}://${req.get("host")}`;
     const successUrl = req.body?.successUrl || `${baseUrl}/billing?success=true`;
     const cancelUrl = req.body?.cancelUrl || `${baseUrl}/billing?canceled=true`;
-    const session = await createCheckoutSession(
-      org.id,
-      customerId,
-      priceId,
-      successUrl,
-      cancelUrl,
-      plan,
-      unitAmountCents
-    );
-
-    res.json({ url: session.url });
+    try {
+      const session = await createCheckoutSession(
+        org.id,
+        customerId,
+        priceId,
+        successUrl,
+        cancelUrl,
+        plan,
+        unitAmountCents
+      );
+      res.json({ url: session.url });
+    } catch (err: any) {
+      if (isStripeMissingResourceError(err)) {
+        await clearOrgStripeBillingIds(org.id, { clearPause: true });
+        return res.status(400).json({
+          error: "Previous payment account is no longer valid. Click Activate monthly billing again.",
+          code: "stale_stripe_customer",
+          subscribe: "/billing",
+        });
+      }
+      throw err;
+    }
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -228,21 +259,16 @@ router.post("/api/billing/portal", requireAuth, async (req: Request, res: Respon
       const session = await createPortalSession(org.stripeCustomerId, `${baseUrl}/billing`);
       return res.json({ url: session.url });
     } catch (err: any) {
-      const msg = String(err?.message || err || "");
+      const { isStripeMissingResourceError, clearOrgStripeBillingIds } = await import(
+        "../lib/stripe-hygiene.js"
+      );
       // Stale Stripe customer ids (deleted / wrong mode) — clear so checkout can recreate
-      if (/no such customer/i.test(msg) || err?.code === "resource_missing") {
+      if (isStripeMissingResourceError(err)) {
         console.warn(
           `[billing] clearing stale stripe customer for org ${req.organizationId}:`,
-          msg
+          err?.message || err
         );
-        await db
-          .update(organizations)
-          .set({
-            stripeCustomerId: null,
-            stripeSubscriptionId: null,
-            lastBillingError: null,
-          } as any)
-          .where(eq(organizations.id, req.organizationId));
+        await clearOrgStripeBillingIds(req.organizationId, { clearPause: true });
         return res.status(400).json({
           error: "Previous payment account is no longer valid. Use Activate monthly billing to set up a new card.",
           code: "stale_stripe_customer",
@@ -267,7 +293,23 @@ router.post("/api/billing/cancel-renewal", requireAuth, async (req: Request, res
       return res.status(400).json({ error: "No active subscription to cancel" });
     }
 
-    const subscription = await setSubscriptionAutoRenew(org.stripeSubscriptionId, false);
+    let subscription;
+    try {
+      subscription = await setSubscriptionAutoRenew(org.stripeSubscriptionId, false);
+    } catch (err: any) {
+      const { isStripeMissingResourceError, clearOrgStripeBillingIds } = await import(
+        "../lib/stripe-hygiene.js"
+      );
+      if (isStripeMissingResourceError(err)) {
+        await clearOrgStripeBillingIds(org.id, { clearPause: true });
+        return res.status(400).json({
+          error: "Previous subscription is no longer valid. Use Activate monthly billing to set up again.",
+          code: "stale_stripe_subscription",
+          subscribe: "/billing",
+        });
+      }
+      throw err;
+    }
     await db
       .update(organizations)
       .set({ subscriptionCanceledAt: new Date() })
@@ -322,7 +364,23 @@ router.post("/api/billing/resume-renewal", requireAuth, async (req: Request, res
       return res.status(400).json({ error: "No subscription to resume" });
     }
 
-    const subscription = await setSubscriptionAutoRenew(org.stripeSubscriptionId, true);
+    let subscription;
+    try {
+      subscription = await setSubscriptionAutoRenew(org.stripeSubscriptionId, true);
+    } catch (err: any) {
+      const { isStripeMissingResourceError, clearOrgStripeBillingIds } = await import(
+        "../lib/stripe-hygiene.js"
+      );
+      if (isStripeMissingResourceError(err)) {
+        await clearOrgStripeBillingIds(org.id, { clearPause: true });
+        return res.status(400).json({
+          error: "Previous subscription is no longer valid. Use Activate monthly billing to set up again.",
+          code: "stale_stripe_subscription",
+          subscribe: "/billing",
+        });
+      }
+      throw err;
+    }
     await db
       .update(organizations)
       .set({ subscriptionCanceledAt: null })
