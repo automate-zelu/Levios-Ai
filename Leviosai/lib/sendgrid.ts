@@ -18,13 +18,24 @@ export async function sendEmail(
   body: string,
   html?: string
 ): Promise<{ success: boolean; error?: string }> {
+  const { resolveEmailDelivery } = await import("./email-delivery.js");
+  const plan = resolveEmailDelivery(to);
+  if (plan.skipped) {
+    console.log(`[email] skipped (${plan.reason}): ${subject}`);
+    return { success: true };
+  }
+  const recipient = plan.recipients[0];
+  if (!recipient) {
+    return { success: false, error: "no_recipient" };
+  }
+
   if (!apiKey) {
     return { success: false, error: "SendGrid not configured. Set SENDGRID_API_KEY in .env" };
   }
 
   try {
     await sgMail.send({
-      to,
+      to: recipient,
       from: fromEmail,
       subject,
       text: body,

@@ -19,6 +19,20 @@ export async function sendEmail(
   body: string,
   html?: string
 ): Promise<{ success: boolean; id?: string; error?: string }> {
+  const { resolveEmailDelivery } = await import("./email-delivery.js");
+  const plan = resolveEmailDelivery(to);
+  if (plan.skipped) {
+    console.log(`[email] skipped (${plan.reason}): ${subject}`);
+    return { success: true, id: "skipped_test" };
+  }
+  const recipient = plan.recipients[0];
+  if (!recipient) {
+    return { success: false, error: "no_recipient" };
+  }
+  if (plan.redirected) {
+    console.log(`[email] redirected → ${recipient}: ${subject}`);
+  }
+
   if (!client) {
     return { success: false, error: "Resend not configured. Set RESEND_API_KEY in .env" };
   }
@@ -26,7 +40,7 @@ export async function sendEmail(
   try {
     const { data, error } = await client.emails.send({
       from: resendFromEmail(),
-      to,
+      to: recipient,
       subject,
       text: body,
       html: html || body.replace(/\n/g, "<br>"),
