@@ -1,0 +1,139 @@
+# One-off / on-demand IOC scan of the Leviosa EC2 host via SSH.
+# Does not deploy or restart the app.
+name: Leviosa EC2 IOC Scan
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: leviosa-ioc-scan
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: SSH IOC scan
+    runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      DEPLOY_DIR: ${{ secrets.EC2_DEPLOY_DIR }}
+    steps:
+      - name: Require SSH secrets
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USER" ] || [ -z "${{ secrets.EC2_KEY }}" ]; then
+            echo "Missing EC2_HOST, EC2_USER, or EC2_KEY"
+            exit 1
+          fi
+          echo "DEPLOY_DIR=${DEPLOY_DIR:-leviosai}" >> "$GITHUB_ENV"
+
+      - name: Add SSH key
+        run: |
+          echo "${{ secrets.EC2_KEY }}" | tr -d '\r' > ec2_key.pem
+          chmod 600 ec2_key.pem
+
+      - name: Run remote IOC scan
+        run: |
+          ssh -i ec2_key.pem \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            "$EC2_USER@$EC2_HOST" \
+            "DEPLOY_DIR='${DEPLOY_DIR:-leviosai}' bash -s" << 'REMOTE'
+          set +e
+          echo "===== HOST ====="
+          hostname; whoami; date -u; uname -a
+          echo "APP_DIR=$HOME/${DEPLOY_DIR:-leviosai}"
+
+          hit() { echo "FOUND: $*"; }
+          miss() { echo "CLEAN: $*"; }
+
+          echo ""
+          echo "===== FILE IOCs ====="
+          for p in \
+            "$HOME/.npm-ws.json" \
+            "$HOME/.npm-ws-runner.js" \
+            "$HOME/.npm-ws.pid" \
+            "$HOME/.npm-ws.log" \
+            "/tmp/.npm-ws.json" \
+            "/tmp/.npm-ws-runner.js" \
+            "/tmp/.npm-ws.pid" \
+            "/tmp/.npm-ws.log" \
+            "/tmp/.cm9vdA==" \
+            "/tmp/fa-brand-400.orc" \
+            "$HOME/fa-brand-400.orc" \
+            "$HOME/${DEPLOY_DIR:-leviosai}/fa-brand-400.orc" \
+            "$HOME/${DEPLOY_DIR:-leviosai}/init" \
+            "$HOME/${DEPLOY_DIR:-leviosai}/client/fa-brand-400.orc" \
+            "$HOME/${DEPLOY_DIR:-leviosai}/app/graph/utils/session.py" \
+            "/root/.npm-ws.json" \
+            "/root/.node_modules/.npm-ws.json"
+          do
+            if [ -e "$p" ]; then hit "$p"; else miss "$p"; fi
+          done
+
+          echo ""
+          echo "===== FIND npm-ws / fa-brand / cm9vdA ====="
+          for root in "$HOME" /tmp /var/tmp /opt /www /srv; do
+            [ -d "$root" ] || continue
+            find "$root" -maxdepth 5 \( \
+              -name '.npm-ws*' -o -name 'npm-ws-runner.js' -o -name 'fa-brand-400.orc' -o -name '.cm9vdA==' \
+            \) 2>/dev/null
+          done
+          # root paths (may need sudo)
+          sudo -n find /root -maxdepth 4 \( -name '.npm-ws*' -o -name 'fa-brand-400.orc' -o -name '.cm9vdA==' \) 2>/dev/null
+          sudo -n ls -la /root/.node_modules 2>/dev/null | head -20
+          sudo -n ls -la /root/.node_modules/.npm-ws* 2>/dev/null
+
+          echo ""
+          echo "===== package.json lifecycle hooks (app only) ====="
+          APP="$HOME/${DEPLOY_DIR:-leviosai}"
+          python3 - <<'PY'
+          import json, os, pathlib
+          app = pathlib.Path(os.path.expanduser(os.environ.get("HOME",""))) / os.environ.get("DEPLOY_DIR","leviosai")
+          suspicious = ("preinstall","postinstall","prestart","poststart","prepare","prepublish","prepublishOnly")
+          danger = ("npm-ws","fa-brand","cm9vdA","/tmp/.","curl ","wget ","node -e","base64","eval(")
+          for p in [app/"package.json", app/"client"/"package.json"]:
+            print(f"--- {p} ---")
+            if not p.exists():
+              print("MISSING"); continue
+            data = json.loads(p.read_text())
+            scripts = data.get("scripts") or {}
+            for k,v in scripts.items():
+              flag = ""
+              low = f"{k} {v}".lower()
+              if k in suspicious or any(d in low for d in danger):
+                flag = "  *** SUSPICIOUS ***"
+              print(f"  {k}: {v}{flag}")
+          PY
+
+          echo ""
+          echo "===== init / fa-brand under app (maxdepth 4) ====="
+          find "$APP" -maxdepth 4 \( -name 'init' -o -name 'fa-brand-400.orc' -o -name '.npm-ws*' -o -path '*/app/graph/utils/session.py' \) 2>/dev/null
+
+          echo ""
+          echo "===== processes / cron / systemd ====="
+          ps auxww | grep -E 'npm-ws|fa-brand|cm9vdA|\.orc' | grep -v grep || echo "CLEAN: no matching processes"
+          crontab -l 2>/dev/null || echo "(no user crontab)"
+          sudo -n crontab -l 2>/dev/null || true
+          systemctl list-units --type=service --all 2>/dev/null | grep -Ei 'npm-ws|orc' || echo "CLEAN: no matching systemd units"
+          ls "$HOME/.config/systemd/user" 2>/dev/null || true
+
+          echo ""
+          echo "===== listening ports (ss) ====="
+          ss -tulpn 2>/dev/null | head -40 || netstat -tulpn 2>/dev/null | head -40
+
+          echo ""
+          echo "===== public HTTP path probe (localhost) ====="
+          for path in / /init /fonts/fa-brand-400.orc /fa-brand-400.orc /.npm-ws.json /.npm-ws-runner.js /session.py; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:3000$path" 2>/dev/null || echo "err")
+            echo "$code  http://127.0.0.1:3000$path"
+          done
+
+          echo ""
+          echo "===== DONE ====="
+          REMOTE
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ec2_key.pem
